@@ -34,6 +34,10 @@ def upload_pdf_to_s3():
     # File details
     local_file = "sample_data.pdf"
     s3_key = "documents/sample_data.pdf"  # Path in S3 bucket
+
+    # Video file
+    local_file = "sample_data.mp4"
+    s3_key = "documents/sample_data.mp4"  # Path in S3 bucket
     
     try:
         # Check if file exists locally

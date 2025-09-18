@@ -241,11 +241,86 @@ async def retrain():
 
 @app.post("/fetch_rag", response_model=RAGQueryResponse)
 async def fetch_rag(request: RAGQueryRequest):
-    return RAGQueryResponse(
-        success=True,
-        message="Fetch RAG endpoint - to be implemented",
-        results=[]
-    )
+    try:
+        # Generate query embedding
+        query_embedding = get_embeddings([request.query])[0]
+        
+        all_results = []
+        
+        # Search across all indexes
+        indexes = [
+            ("pdf", pdf_index),
+            ("video", video_index), 
+            ("image", image_index)
+        ]
+        
+        for file_type, index in indexes:
+            try:
+                # Get all namespaces in this index
+                stats = index.describe_index_stats()
+                namespaces = stats.get('namespaces', {})
+                
+                if not namespaces:
+                    # If no namespaces, search without namespace
+                    search_response = index.query(
+                        vector=query_embedding,
+                        top_k=request.top_k,
+                        include_metadata=True
+                    )
+                    
+                    for match in search_response.matches:
+                        result = {
+                            "content": match.metadata.get("content", ""),
+                            "score": float(match.score),
+                            "file_type": file_type,
+                            "filename": match.metadata.get("filename", "unknown"),
+                            "s3_url": match.metadata.get("s3_url", ""),
+                            "chunk_index": match.metadata.get("chunk_index", 0),
+                            "metadata": match.metadata
+                        }
+                        all_results.append(result)
+                else:
+                    # Search each namespace separately
+                    for namespace_name in namespaces.keys():
+                        search_response = index.query(
+                            vector=query_embedding,
+                            top_k=request.top_k,
+                            include_metadata=True,
+                            namespace=namespace_name
+                        )
+                        
+                        for match in search_response.matches:
+                            result = {
+                                "content": match.metadata.get("content", ""),
+                                "score": float(match.score),
+                                "file_type": file_type,
+                                "filename": match.metadata.get("filename", namespace_name),
+                                "s3_url": match.metadata.get("s3_url", ""),
+                                "chunk_index": match.metadata.get("chunk_index", 0),
+                                "namespace": namespace_name,
+                                "metadata": match.metadata
+                            }
+                            all_results.append(result)
+                            
+            except Exception as e:
+                # Continue with other indexes if one fails
+                print(f"Error searching {file_type} index: {str(e)}")
+                continue
+        
+        # Sort all results by score (highest first)
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Limit to requested top_k
+        final_results = all_results[:request.top_k]
+        
+        return RAGQueryResponse(
+            success=True,
+            message=f"Found {len(final_results)} results across all indexes",
+            results=final_results
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")
 
 
 @app.get("/")

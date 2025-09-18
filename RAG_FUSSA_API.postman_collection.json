@@ -1,0 +1,312 @@
+{
+	"info": {
+		"_postman_id": "rag-fussa-api-collection",
+		"name": "RAG FUSSA API",
+		"description": "Complete API collection for RAG FUSSA system with train, untrain, retrain, and fetch_rag endpoints",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "http://localhost:8000/",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						""
+					]
+				},
+				"description": "Basic health check endpoint"
+			}
+		},
+		{
+			"name": "Train - PDF File",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"s3_url\": \"https://new-model-training-data.s3.amazonaws.com/documents/sample_data.pdf\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/train",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"train"
+					]
+				},
+				"description": "Train the RAG system with a PDF file from S3"
+			}
+		},
+		{
+			"name": "Train - Video File",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"s3_url\": \"https://your-bucket.s3.amazonaws.com/videos/presentation.mp4\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/train",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"train"
+					]
+				},
+				"description": "Train the RAG system with a video file from S3 (replace with your actual S3 URL)"
+			}
+		},
+		{
+			"name": "Train - Image File",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"s3_url\": \"https://your-bucket.s3.amazonaws.com/images/diagram.png\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/train",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"train"
+					]
+				},
+				"description": "Train the RAG system with an image file from S3 (replace with your actual S3 URL)"
+			}
+		},
+		{
+			"name": "Untrain - PDF File",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"s3_url\": \"https://new-model-training-data.s3.amazonaws.com/documents/sample_data.pdf\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/untrain",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"untrain"
+					]
+				},
+				"description": "Remove a PDF file from the RAG system using S3 URL"
+			}
+		},
+		{
+			"name": "Untrain - Video File",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"s3_url\": \"https://your-bucket.s3.amazonaws.com/videos/presentation.mp4\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/untrain",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"untrain"
+					]
+				},
+				"description": "Remove a video file from the RAG system using S3 URL"
+			}
+		},
+		{
+			"name": "Untrain - Image File",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"s3_url\": \"https://your-bucket.s3.amazonaws.com/images/diagram.png\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/untrain",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"untrain"
+					]
+				},
+				"description": "Remove an image file from the RAG system using S3 URL"
+			}
+		},
+		{
+			"name": "Retrain System",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/retrain",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"retrain"
+					]
+				},
+				"description": "Retrain the entire RAG system (placeholder endpoint)"
+			}
+		},
+		{
+			"name": "Fetch RAG - Basic Query",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"query\": \"What is the main topic of the document?\",\n  \"top_k\": 5\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/fetch_rag",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"fetch_rag"
+					]
+				},
+				"description": "Query the RAG system for relevant information (placeholder endpoint)"
+			}
+		},
+		{
+			"name": "Fetch RAG - Advanced Query",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"query\": \"Explain the key concepts mentioned in the documents\",\n  \"top_k\": 10\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/fetch_rag",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"fetch_rag"
+					]
+				},
+				"description": "Advanced RAG query with more results"
+			}
+		},
+		{
+			"name": "API Documentation",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "http://localhost:8000/docs",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"docs"
+					]
+				},
+				"description": "Access FastAPI auto-generated documentation"
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "your_s3_bucket",
+			"value": "new-model-training-data",
+			"type": "string"
+		}
+	]
+}

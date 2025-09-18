@@ -1,0 +1,48 @@
+🌲 PINECONE ACCOUNT
+├── Index: "rag-pdfs" (dimension: 1536, metric: cosine)
+│   ├── Namespace: "document1.pdf"
+│   │   ├── document1.pdf_0 (vector + metadata)
+│   │   ├── document1.pdf_1 (vector + metadata)
+│   │   ├── document1.pdf_2 (vector + metadata)
+│   │   └── ... (more chunks)
+│   │
+│   ├── Namespace: "document2.pdf"
+│   │   ├── document2.pdf_0 (vector + metadata)
+│   │   ├── document2.pdf_1 (vector + metadata)
+│   │   └── ... (more chunks)
+│   │
+│   ├── Namespace: "report.pdf"
+│   │   ├── report.pdf_0 (vector + metadata)
+│   │   └── ... (more chunks)
+│   │
+│   └── Namespace: "manual.pdf"
+│       ├── manual.pdf_0 (vector + metadata)
+│       └── ... (more chunks)
+│
+├── Index: "rag-videos" (dimension: 1536, metric: cosine)
+│   ├── Namespace: "sample_data.mp4" ← Your uploaded video!
+│   │   ├── sample_data.mp4_0 (vector + metadata)
+│   │   ├── sample_data.mp4_1 (vector + metadata)
+│   │   └── ... (more chunks)
+│   │
+│   ├── Namespace: "presentation.mp4"
+│   │   ├── presentation.mp4_0 (vector + metadata)
+│   │   └── ... (more chunks)
+│   │
+│   ├── Namespace: "tutorial.mp4"
+│   │   └── ... (chunks)
+│   │
+│   ├── Namespace: "demo.avi"
+│   │   └── ... (chunks)
+│   │
+│   ├── Namespace: "meeting.mov"
+│   │   └── ... (chunks)
+│   │
+│   ├── Namespace: "training.mp4"
+│   │   └── ... (chunks)
+│   │
+│   └── Namespace: "webinar.mp4"
+│       └── ... (chunks)
+│
+└── Index: "rag-images" (dimension: 1536, metric: cosine)
+    └── (Empty for now - ready for image files)

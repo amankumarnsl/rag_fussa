@@ -68,3 +68,27 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# === Documents ===
+*.pdf
+
+# === Video ===
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.flv
+*.wmv
+*.webm
+
+# === Audio ===
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+*.wma
+*.m4a
+*.aiff
+*.alac
+

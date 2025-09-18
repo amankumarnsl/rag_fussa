@@ -1,7 +1,6 @@
 import os
 import io
 import boto3
-import pinecone
 import openai
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException
@@ -32,10 +31,11 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
-pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
-pdf_index = pinecone.Index(PINECONE_PDF_INDEX)
-video_index = pinecone.Index(PINECONE_VIDEO_INDEX)
-image_index = pinecone.Index(PINECONE_IMAGE_INDEX)
+from pinecone import Pinecone
+pc = Pinecone(api_key=PINECONE_API_KEY)
+pdf_index = pc.Index(PINECONE_PDF_INDEX)
+video_index = pc.Index(PINECONE_VIDEO_INDEX)
+image_index = pc.Index(PINECONE_IMAGE_INDEX)
 
 openai.api_key = OPENAI_API_KEY
 

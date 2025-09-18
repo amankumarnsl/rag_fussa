@@ -136,7 +136,7 @@ def process_image(image_content, file_name, chunk_strategy="words"):
     """
     try:
         # Extract metadata
-        metadata = extract_image_metadata(image_content, file_name)``
+        metadata = extract_image_metadata(image_content, file_name)
         
         # Analyze image content
         visual_analysis = analyze_image_content(image_content, file_name)

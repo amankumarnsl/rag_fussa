@@ -8,14 +8,15 @@ A simple RAG system built with FastAPI that processes files from AWS S3 and stor
 - **PDF Processing**: Extracts text from PDF files with page information
 - **Video Processing**: Analyzes video content, extracts frames, and transcribes audio
 - **Image Processing**: Analyzes visual content and extracts text using OCR
-- **File Naming**: Each file is stored in Pinecone with a custom name you provide
-- **AWS S3 Integration**: Direct file processing from S3 URLs
-- **Pinecone Vector Storage**: All embeddings stored in Pinecone with rich metadata
+- **Organized Storage**: Separate Pinecone indexes for each file type (PDFs, videos, images)
+- **File Isolation**: Each file stored in its own namespace within the appropriate index
+- **AWS S3 Integration**: Direct file processing from S3 URLs with automatic filename extraction
+- **Smart Organization**: Files tracked by S3 URL for easy management
 
 ## API Endpoints
 
-- `POST /train` - Process S3 file and save to Pinecone with custom name
-- `POST /untrain` - Remove file from Pinecone by name
+- `POST /train` - Process S3 file and save to appropriate Pinecone index
+- `POST /untrain` - Remove file from Pinecone using S3 URL
 - `POST /retrain` - Placeholder for future use
 - `POST /fetch_rag` - Placeholder for future use
 
@@ -85,8 +86,7 @@ The API will be available at:
 curl -X POST "http://localhost:8000/train" \
      -H "Content-Type: application/json" \
      -d '{
-       "s3_url": "https://my-bucket.s3.amazonaws.com/documents/sample.pdf",
-       "file_name": "my_research_paper"
+       "s3_url": "https://my-bucket.s3.amazonaws.com/documents/sample.pdf"
      }'
 ```
 
@@ -95,8 +95,7 @@ curl -X POST "http://localhost:8000/train" \
 curl -X POST "http://localhost:8000/train" \
      -H "Content-Type: application/json" \
      -d '{
-       "s3_url": "https://my-bucket.s3.amazonaws.com/videos/presentation.mp4",
-       "file_name": "company_presentation"
+       "s3_url": "https://my-bucket.s3.amazonaws.com/videos/presentation.mp4"
      }'
 ```
 
@@ -105,8 +104,7 @@ curl -X POST "http://localhost:8000/train" \
 curl -X POST "http://localhost:8000/train" \
      -H "Content-Type: application/json" \
      -d '{
-       "s3_url": "https://my-bucket.s3.amazonaws.com/images/diagram.png",
-       "file_name": "architecture_diagram"
+       "s3_url": "https://my-bucket.s3.amazonaws.com/images/diagram.png"
      }'
 ```
 
@@ -116,7 +114,7 @@ curl -X POST "http://localhost:8000/train" \
 curl -X POST "http://localhost:8000/untrain" \
      -H "Content-Type: application/json" \
      -d '{
-       "file_name": "my_document"
+       "s3_url": "https://my-bucket.s3.amazonaws.com/documents/sample.pdf"
      }'
 ```
 

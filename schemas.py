@@ -3,12 +3,11 @@ from typing import Optional, List, Dict, Any
 
 
 class TrainRequest(BaseModel):
-    s3_url: HttpUrl
-    file_name: str = Field(..., description="Name to save the file as in Pinecone")
+    s3_url: HttpUrl = Field(..., description="AWS S3 URL of the file to process")
 
 
 class UntrainRequest(BaseModel):
-    file_name: str = Field(..., description="Name of the file to remove from Pinecone")
+    s3_url: HttpUrl = Field(..., description="AWS S3 URL of the file to remove from Pinecone")
 
 
 class RAGQueryRequest(BaseModel):
@@ -19,14 +18,16 @@ class RAGQueryRequest(BaseModel):
 class TrainResponse(BaseModel):
     success: bool
     message: str
-    file_name: Optional[str] = None
+    s3_url: Optional[str] = None
+    file_type: Optional[str] = None
     chunks_created: Optional[int] = None
 
 
 class UntrainResponse(BaseModel):
     success: bool
     message: str
-    file_name: Optional[str] = None
+    s3_url: Optional[str] = None
+    file_type: Optional[str] = None
     chunks_removed: Optional[int] = None
 
 

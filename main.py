@@ -33,9 +33,19 @@ s3_client = boto3.client(
 )
 
 pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
-index = pinecone.Index(PINECONE_INDEX_NAME)
+pdf_index = pinecone.Index(PINECONE_PDF_INDEX)
+video_index = pinecone.Index(PINECONE_VIDEO_INDEX)
+image_index = pinecone.Index(PINECONE_IMAGE_INDEX)
 
 openai.api_key = OPENAI_API_KEY
+
+
+def extract_filename_from_s3_url(s3_url):
+    """Extract filename from S3 URL."""
+    parsed_url = urlparse(str(s3_url))
+    object_key = parsed_url.path.lstrip('/')
+    filename = os.path.basename(object_key)
+    return filename
 
 
 def get_file_type(file_extension):
@@ -52,6 +62,18 @@ def get_file_type(file_extension):
         return 'unknown'
 
 
+def get_index_for_file_type(file_type):
+    """Get appropriate Pinecone index for file type."""
+    if file_type == 'pdf':
+        return pdf_index
+    elif file_type == 'video':
+        return video_index
+    elif file_type == 'image':
+        return image_index
+    else:
+        raise ValueError(f"Unsupported file type: {file_type}")
+
+
 
 
 def get_embeddings(texts):
@@ -66,10 +88,11 @@ def get_embeddings(texts):
 @app.post("/train", response_model=TrainResponse)
 async def train(request: TrainRequest):
     try:
-        # Parse S3 URL
+        # Parse S3 URL and extract filename
         parsed_url = urlparse(str(request.s3_url))
         bucket_name = parsed_url.netloc.split('.')[0]
         object_key = parsed_url.path.lstrip('/')
+        filename = extract_filename_from_s3_url(request.s3_url)
         
         # Download file from S3
         response = s3_client.get_object(Bucket=bucket_name, Key=object_key)
@@ -85,27 +108,31 @@ async def train(request: TrainRequest):
                 detail=f"Unsupported file type: {file_extension}"
             )
         
+        # Get appropriate index for file type
+        index = get_index_for_file_type(file_type)
+        
         # Process file based on type
         if file_type == 'pdf':
-            processed_chunks = process_pdf(file_content, request.file_name)
+            processed_chunks = process_pdf(file_content, filename)
         elif file_type == 'video':
-            processed_chunks = process_video(file_content, request.file_name)
+            processed_chunks = process_video(file_content, filename)
         elif file_type == 'image':
-            processed_chunks = process_image(file_content, request.file_name)
+            processed_chunks = process_image(file_content, filename)
         
         # Extract content for embeddings
         chunk_texts = [chunk["content"] for chunk in processed_chunks]
         embeddings = get_embeddings(chunk_texts)
         
-        # Prepare vectors for Pinecone
+        # Prepare vectors for Pinecone with namespace
         vectors = []
         for i, (chunk, embedding) in enumerate(zip(processed_chunks, embeddings)):
-            vector_id = f"{request.file_name}_{i}"
+            vector_id = f"{filename}_{i}"
             vectors.append({
                 "id": vector_id,
                 "values": embedding,
                 "metadata": {
-                    "file_name": request.file_name,
+                    "s3_url": str(request.s3_url),
+                    "filename": filename,
                     "chunk_index": i,
                     "content": chunk["content"],
                     "file_type": file_type,
@@ -113,13 +140,14 @@ async def train(request: TrainRequest):
                 }
             })
         
-        # Upload to Pinecone
-        index.upsert(vectors=vectors)
+        # Upload to appropriate Pinecone index with filename as namespace
+        index.upsert(vectors=vectors, namespace=filename)
         
         return TrainResponse(
             success=True,
-            message=f"Successfully trained {file_type} file: {request.file_name}",
-            file_name=request.file_name,
+            message=f"Successfully trained {file_type} file: {filename}",
+            s3_url=str(request.s3_url),
+            file_type=file_type,
             chunks_created=len(processed_chunks)
         )
         
@@ -130,34 +158,77 @@ async def train(request: TrainRequest):
 @app.post("/untrain", response_model=UntrainResponse)
 async def untrain(request: UntrainRequest):
     try:
-        # Query to find all vectors for this file
-        query_response = index.query(
-            vector=[0] * 1536,  # Dummy vector
-            filter={"file_name": request.file_name},
-            top_k=10000,
-            include_metadata=False
-        )
+        # Extract filename from S3 URL
+        filename = extract_filename_from_s3_url(request.s3_url)
+        file_extension = filename.split('.')[-1].lower()
+        file_type = get_file_type(file_extension)
         
-        # Get vector IDs to delete
-        vector_ids = [match.id for match in query_response.matches]
+        if file_type == 'unknown':
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported file type: {file_extension}"
+            )
         
-        if vector_ids:
-            # Delete vectors from Pinecone
-            index.delete(ids=vector_ids)
+        # Get appropriate index for file type
+        index = get_index_for_file_type(file_type)
+        
+        # Delete the entire namespace (all chunks for this file)
+        try:
+            # Get stats to check if namespace exists
+            stats = index.describe_index_stats()
+            namespaces = stats.get('namespaces', {})
             
-            return UntrainResponse(
-                success=True,
-                message=f"Successfully removed file: {request.file_name}",
-                file_name=request.file_name,
-                chunks_removed=len(vector_ids)
+            if filename in namespaces:
+                # Delete the namespace
+                index.delete(delete_all=True, namespace=filename)
+                chunks_removed = namespaces[filename].get('vector_count', 0)
+                
+                return UntrainResponse(
+                    success=True,
+                    message=f"Successfully removed {file_type} file: {filename}",
+                    s3_url=str(request.s3_url),
+                    file_type=file_type,
+                    chunks_removed=chunks_removed
+                )
+            else:
+                return UntrainResponse(
+                    success=False,
+                    message=f"File not found: {filename}",
+                    s3_url=str(request.s3_url),
+                    file_type=file_type,
+                    chunks_removed=0
+                )
+        except Exception as e:
+            # If namespace deletion fails, try alternative approach
+            # Query and delete by metadata
+            query_response = index.query(
+                vector=[0] * 1536,  # Dummy vector
+                filter={"s3_url": str(request.s3_url)},
+                top_k=10000,
+                include_metadata=False,
+                namespace=filename
             )
-        else:
-            return UntrainResponse(
-                success=False,
-                message=f"File not found: {request.file_name}",
-                file_name=request.file_name,
-                chunks_removed=0
-            )
+            
+            vector_ids = [match.id for match in query_response.matches]
+            
+            if vector_ids:
+                index.delete(ids=vector_ids, namespace=filename)
+                
+                return UntrainResponse(
+                    success=True,
+                    message=f"Successfully removed {file_type} file: {filename}",
+                    s3_url=str(request.s3_url),
+                    file_type=file_type,
+                    chunks_removed=len(vector_ids)
+                )
+            else:
+                return UntrainResponse(
+                    success=False,
+                    message=f"File not found: {filename}",
+                    s3_url=str(request.s3_url),
+                    file_type=file_type,
+                    chunks_removed=0
+                )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Untrain failed: {str(e)}")

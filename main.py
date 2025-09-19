@@ -12,6 +12,7 @@ from schemas import *
 from pdf_processor import process_pdf, get_pdf_info
 from video_processor import process_video, is_video_file
 from image_processor import process_image, is_image_file
+from text_pipeline import process_text_file_to_chunks
 
 app = FastAPI(title="RAG FUSSA API", version="1.0.0")
 
@@ -77,10 +78,10 @@ def get_index_for_file_type(file_type):
 
 
 def get_embeddings(texts):
-    """Get embeddings from OpenAI."""
+    """Get embeddings from OpenAI using text-embedding-3-small."""
     response = openai.embeddings.create(
         input=texts,
-        model="text-embedding-ada-002"
+        model="text-embedding-3-small"
     )
     return [item.embedding for item in response.data]
 
@@ -111,15 +112,23 @@ async def train(request: TrainRequest):
         # Get appropriate index for file type
         index = get_index_for_file_type(file_type)
         
-        # Process file based on type
+        # Step 1: Extract text and save to .txt file
         if file_type == 'pdf':
-            processed_chunks = process_pdf(file_content, filename)
+            text_filepath = process_pdf(file_content, filename)
         elif file_type == 'video':
-            processed_chunks = process_video(file_content, filename)
+            text_filepath = process_video(file_content, filename)
         elif file_type == 'image':
-            processed_chunks = process_image(file_content, filename)
+            text_filepath = process_image(file_content, filename)  # Will return text path too
         
-        # Extract content for embeddings
+        # Step 2: Common text processing pipeline (same for all file types)
+        processed_chunks = process_text_file_to_chunks(
+            text_filepath=text_filepath,
+            filename=filename,
+            file_type=file_type,
+            chunk_strategy="semantic"
+        )
+        
+        # Step 3: Generate embeddings for final chunks
         chunk_texts = [chunk["content"] for chunk in processed_chunks]
         embeddings = get_embeddings(chunk_texts)
         

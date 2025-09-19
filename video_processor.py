@@ -3,7 +3,7 @@ Video processing functionality
 """
 import os
 import tempfile
-from chunking import smart_chunk
+from smart_chunking import process_extracted_text
 
 
 def extract_video_metadata(video_content, file_name):
@@ -66,102 +66,284 @@ def extract_video_frames(video_content, file_name, max_frames=10):
         raise Exception(f"Failed to extract video frames: {str(e)}")
 
 
-def extract_video_audio_transcript(video_content, file_name):
+def extract_audio_from_video(video_content, file_name):
     """
-    Extract audio and transcribe to text.
+    Extract audio from video file using ffmpeg.
     
     Args:
         video_content (bytes): Video file content
         file_name (str): Name of the file
         
     Returns:
-        str: Transcribed text from video audio
+        tuple: (audio_file_path, audio_info) or (None, error_message)
     """
-    try:
-        # Placeholder for audio transcription
-        # In future implementation, you could:
-        # 1. Extract audio using ffmpeg
-        # 2. Use OpenAI Whisper for transcription
-        # 3. Use other speech-to-text services
-        
-        transcript = f"""
-        [AUDIO TRANSCRIPT FROM {file_name}]
-        
-        This is a placeholder transcript for the video file.
-        In a full implementation, this would contain the actual
-        transcribed audio content from the video.
-        
-        The video appears to be in {file_name.split('.')[-1].upper()} format.
-        """
-        
-        return transcript.strip()
-        
-    except Exception as e:
-        raise Exception(f"Failed to extract video audio transcript: {str(e)}")
-
-
-def process_video(video_content, file_name, chunk_strategy="words"):
-    """
-    Process video file and return chunks with metadata.
+    import tempfile
+    import subprocess
+    import os
     
-    Args:
-        video_content (bytes): Video file content
-        file_name (str): Name of the file
-        chunk_strategy (str): Chunking strategy to use
-        
-    Returns:
-        list: List of content chunks with metadata
-    """
     try:
-        # Extract metadata
-        metadata = extract_video_metadata(video_content, file_name)
+        # Create temporary files
+        with tempfile.NamedTemporaryFile(suffix=f".{file_name.split('.')[-1]}", delete=False) as temp_video:
+            temp_video.write(video_content)
+            temp_video_path = temp_video.name
         
-        # Extract frames information
-        frames = extract_video_frames(video_content, file_name)
+        # Create temp audio file path
+        temp_audio_path = temp_video_path.rsplit('.', 1)[0] + '_audio.wav'
         
-        # Extract audio transcript
-        transcript = extract_video_audio_transcript(video_content, file_name)
-        
-        # Combine all content
-        content_parts = [
-            f"Video File: {file_name}",
-            f"Format: {metadata['format']}",
-            f"File Size: {metadata['file_size']} bytes",
-            "",
-            "Frame Analysis:",
+        # Extract audio using ffmpeg
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-i', temp_video_path,
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',  # Audio codec
+            '-ar', '16000',  # Sample rate
+            '-ac', '1',  # Mono
+            '-y',  # Overwrite output file
+            temp_audio_path
         ]
         
-        for frame in frames:
-            content_parts.append(f"- {frame['description']} at {frame['timestamp']}")
+        # Run ffmpeg command
+        result = subprocess.run(
+            ffmpeg_cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
         
-        content_parts.extend([
-            "",
-            "Audio Transcript:",
-            transcript
-        ])
+        # Clean up video temp file
+        try:
+            os.unlink(temp_video_path)
+        except:
+            pass
         
-        full_content = "\n".join(content_parts)
+        if result.returncode == 0:
+            # Get audio file info
+            audio_info = {
+                "status": "success",
+                "audio_file": temp_audio_path,
+                "format": "wav",
+                "sample_rate": "16000",
+                "channels": "1",
+                "extracted_from": file_name
+            }
+            
+            # Check if audio file exists and has content
+            if os.path.exists(temp_audio_path) and os.path.getsize(temp_audio_path) > 0:
+                return temp_audio_path, audio_info
+            else:
+                return None, "Audio file was created but is empty"
+        else:
+            error_msg = f"FFmpeg failed: {result.stderr}"
+            return None, error_msg
+            
+    except subprocess.TimeoutExpired:
+        return None, "Audio extraction timed out (file too large or processing too slow)"
+    except FileNotFoundError:
+        return None, "FFmpeg not found. Please install FFmpeg: 'brew install ffmpeg' or 'apt-get install ffmpeg'"
+    except Exception as e:
+        return None, f"Failed to extract audio: {str(e)}"
+    finally:
+        # Clean up temp video file if it still exists
+        try:
+            if 'temp_video_path' in locals():
+                os.unlink(temp_video_path)
+        except:
+            pass
+
+
+def transcribe_audio_with_assemblyai(audio_path, file_name):
+    """
+    Transcribe audio using AssemblyAI.
+    
+    Args:
+        audio_path (str): Path to the audio file
+        file_name (str): Original filename
         
-        # Create chunks
-        chunks = smart_chunk(full_content, chunk_size=800, overlap=100, strategy=chunk_strategy)
+    Returns:
+        dict: Transcription results or error message
+    """
+    try:
+        import assemblyai as aai
+        from config import ASSEMBLYAI_API_KEY
         
-        # Add metadata to chunks
-        processed_chunks = []
-        for i, chunk in enumerate(chunks):
-            processed_chunks.append({
-                "content": chunk,
-                "metadata": {
-                    "file_name": file_name,
-                    "file_type": "video",
-                    "video_format": metadata['format'],
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    "has_frames": len(frames) > 0,
-                    "has_transcript": bool(transcript.strip())
-                }
-            })
+        # Set AssemblyAI API key
+        aai.settings.api_key = ASSEMBLYAI_API_KEY
         
-        return processed_chunks
+        # Configure transcription settings
+        config = aai.TranscriptionConfig(
+            speech_model=aai.SpeechModel.universal,
+            language_detection=True,  # Auto-detect language
+            punctuate=True,  # Add punctuation
+            format_text=True  # Format text properly
+        )
+        
+        # Create transcriber and transcribe the audio file
+        transcriber = aai.Transcriber(config=config)
+        transcript = transcriber.transcribe(audio_path)
+        
+        # Check transcription status
+        if transcript.status == "error":
+            return {
+                "success": False,
+                "error": f"AssemblyAI transcription failed: {transcript.error}",
+                "transcript": "",
+                "duration": "Unknown",
+                "language": "Unknown"
+            }
+        
+        # Extract transcript information
+        transcript_text = transcript.text or ""
+        duration = getattr(transcript, 'audio_duration', 'Unknown')
+        language = getattr(transcript, 'language_code', 'Unknown')
+        confidence = getattr(transcript, 'confidence', 'Unknown')
+        
+        return {
+            "success": True,
+            "transcript": transcript_text,
+            "duration": duration,
+            "language": language,
+            "confidence": confidence,
+            "model": "universal",
+            "service": "AssemblyAI"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"AssemblyAI transcription failed: {str(e)}",
+            "transcript": "",
+            "duration": "Unknown",
+            "language": "Unknown"
+        }
+
+
+def extract_video_audio_transcript(video_content, file_name):
+    """
+    Extract audio from video and transcribe using AssemblyAI.
+    
+    Args:
+        video_content (bytes): Video file content
+        file_name (str): Name of the file
+        
+    Returns:
+        str: Transcribed text or error information
+    """
+    try:
+        # Extract audio from video
+        audio_path, audio_info = extract_audio_from_video(video_content, file_name)
+        
+        if audio_path:
+            # Audio extracted successfully, now transcribe
+            transcription_result = transcribe_audio_with_assemblyai(audio_path, file_name)
+            
+            if transcription_result["success"]:
+                # Transcription successful
+                transcript = f"""
+[AUDIO TRANSCRIBED FROM {file_name}]
+
+✅ Audio extraction & transcription successful!
+🎵 Audio format: {audio_info.get('format', 'wav')}
+📊 Sample rate: {audio_info.get('sample_rate', '16000')} Hz
+🔊 Channels: {audio_info.get('channels', '1')} (mono)
+🗣️  Language: {transcription_result.get('language', 'Unknown')}
+⏱️  Duration: {transcription_result.get('duration', 'Unknown')} seconds
+🎯 Confidence: {transcription_result.get('confidence', 'Unknown')}
+🤖 Model: {transcription_result.get('model', 'universal')} ({transcription_result.get('service', 'AssemblyAI')})
+
+📝 TRANSCRIPT:
+{transcription_result['transcript']}
+"""
+                
+                # Clean up the temporary audio file
+                try:
+                    os.unlink(audio_path)
+                except:
+                    pass
+                    
+                return transcript.strip()
+            else:
+                # Transcription failed
+                transcript = f"""
+[AUDIO EXTRACTION SUCCESSFUL, TRANSCRIPTION FAILED FROM {file_name}]
+
+✅ Audio extraction successful!
+❌ Transcription error: {transcription_result.get('error', 'Unknown error')}
+
+📁 Audio file: {os.path.basename(audio_path)}
+🎵 Format: {audio_info.get('format', 'wav')}
+📊 Sample rate: {audio_info.get('sample_rate', '16000')} Hz
+
+💡 Possible issues:
+1. AssemblyAI API key not set or invalid
+2. Audio file too large or corrupted
+3. No speech content in audio
+4. Network connectivity issues
+5. Insufficient AssemblyAI credits
+"""
+                
+                # Clean up the temporary audio file
+                try:
+                    os.unlink(audio_path)
+                except:
+                    pass
+                    
+                return transcript.strip()
+        else:
+            # Audio extraction failed
+            error_msg = audio_info if isinstance(audio_info, str) else "Unknown error"
+            transcript = f"""
+[AUDIO EXTRACTION FAILED FROM {file_name}]
+
+❌ Error: {error_msg}
+
+📝 Fallback: Using video metadata only
+🎬 Video format: {file_name.split('.')[-1].upper()}
+⚠️  No audio content available for transcription
+
+💡 To fix this issue:
+1. Install FFmpeg: 'brew install ffmpeg' (macOS) or 'apt-get install ffmpeg' (Linux)
+2. Ensure video file has audio track
+3. Check video file is not corrupted
+"""
+            return transcript.strip()
+        
+    except Exception as e:
+        return f"[AUDIO PROCESSING ERROR] Failed to process audio from {file_name}: {str(e)}"
+
+
+def process_video(video_content, file_name, chunk_strategy="semantic"):
+    """
+    Process video file: extract audio → transcribe → save to .txt → return path for common processing.
+    
+    Args:
+        video_content (bytes): Video file content
+        file_name (str): Name of the file
+        chunk_strategy (str): Chunking strategy - "semantic", "hierarchical", "markdown", "simple"
+        
+    Returns:
+        str: Path to saved transcript text file for common processing pipeline
+    """
+    try:
+        # Extract metadata (for logging)
+        metadata = extract_video_metadata(video_content, file_name)
+        print(f"🎥 Video processing: {file_name} ({metadata.get('format', 'unknown')} format)")
+        
+        # Extract and transcribe audio to get transcript text
+        transcript = extract_video_audio_transcript(video_content, file_name)
+        
+        if not transcript.strip():
+            raise Exception("No transcript content extracted from video")
+        
+        print(f"📊 Video transcript extracted: {len(transcript)} characters")
+        
+        # Save transcript to text file
+        from smart_chunking import save_extracted_text
+        text_filepath = save_extracted_text(transcript, file_name, "video")
+        
+        if not text_filepath:
+            raise Exception("Failed to save transcript text file")
+        
+        return text_filepath
         
     except Exception as e:
         raise Exception(f"Failed to process video: {str(e)}")

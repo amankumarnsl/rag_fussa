@@ -5,5 +5,11 @@ pydantic
 boto3
 pinecone
 openai
-PyPDF2
+PyMuPDF
 requests
+assemblyai
+langchain==0.3.0
+langchain-openai==0.2.0
+langchain-text-splitters==0.3.0
+numpy
+scikit-learn

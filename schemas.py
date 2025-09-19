@@ -15,6 +15,11 @@ class RAGQueryRequest(BaseModel):
     top_k: Optional[int] = 5
 
 
+class AskQueryRAGRequest(BaseModel):
+    query: str = Field(..., description="Question to ask the RAG system")
+    top_k: Optional[int] = Field(5, description="Number of chunks to retrieve for context")
+
+
 class TrainResponse(BaseModel):
     success: bool
     message: str
@@ -35,3 +40,12 @@ class RAGQueryResponse(BaseModel):
     success: bool
     message: str
     results: Optional[List[Dict[str, Any]]] = None
+
+
+class AskQueryRAGResponse(BaseModel):
+    success: bool
+    message: str
+    query: str
+    answer: str
+    retrieved_content: Optional[List[Dict[str, Any]]] = None
+    total_retrieved: Optional[int] = None

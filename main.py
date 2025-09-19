@@ -248,11 +248,11 @@ async def retrain():
     return {"message": "Retrain endpoint - to be implemented"}
 
 
-@app.post("/fetch_rag", response_model=RAGQueryResponse)
-async def fetch_rag(request: RAGQueryRequest):
+async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """Internal function to fetch RAG results (used by both fetch_rag and ask-query-rag)"""
     try:
         # Generate query embedding
-        query_embedding = get_embeddings([request.query])[0]
+        query_embedding = get_embeddings([query])[0]
         
         all_results = []
         
@@ -273,7 +273,7 @@ async def fetch_rag(request: RAGQueryRequest):
                     # If no namespaces, search without namespace
                     search_response = index.query(
                         vector=query_embedding,
-                        top_k=request.top_k,
+                        top_k=top_k,
                         include_metadata=True
                     )
                     
@@ -293,7 +293,7 @@ async def fetch_rag(request: RAGQueryRequest):
                     for namespace_name in namespaces.keys():
                         search_response = index.query(
                             vector=query_embedding,
-                            top_k=request.top_k,
+                            top_k=top_k,
                             include_metadata=True,
                             namespace=namespace_name
                         )
@@ -320,16 +320,160 @@ async def fetch_rag(request: RAGQueryRequest):
         all_results.sort(key=lambda x: x["score"], reverse=True)
         
         # Limit to requested top_k
-        final_results = all_results[:request.top_k]
+        final_results = all_results[:top_k]
         
-        return RAGQueryResponse(
-            success=True,
-            message=f"Found {len(final_results)} results across all indexes",
-            results=final_results
-        )
+        return {
+            "success": True,
+            "results": final_results,
+            "total_retrieved": len(final_results)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "results": [],
+            "total_retrieved": 0
+        }
+
+
+@app.post("/fetch_rag", response_model=RAGQueryResponse)
+async def fetch_rag(request: RAGQueryRequest):
+    """Retrieve relevant content from RAG system without AI processing"""
+    try:
+        result = await fetch_rag_internal(request.query, request.top_k)
+        
+        if result["success"]:
+            return RAGQueryResponse(
+                success=True,
+                message=f"Found {result['total_retrieved']} results across all indexes",
+                results=result["results"]
+            )
+        else:
+            raise HTTPException(status_code=500, detail=result["error"])
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")
+
+
+@app.post("/ask-query-rag", response_model=AskQueryRAGResponse)
+async def ask_query_rag(request: AskQueryRAGRequest):
+    """Ask a question to the RAG system and get an AI-generated answer based on retrieved content"""
+    try:
+        print(f"🤖 Processing AI query: {request.query}")
+        
+        # Step 1: Retrieve relevant content using fetch_rag_internal
+        rag_result = await fetch_rag_internal(request.query, request.top_k)
+        
+        if not rag_result["success"]:
+            raise HTTPException(status_code=500, detail=f"Content retrieval failed: {rag_result['error']}")
+        
+        retrieved_content = rag_result["results"]
+        total_retrieved = rag_result["total_retrieved"]
+        
+        print(f"📚 Retrieved {total_retrieved} relevant chunks")
+        
+        # Step 2: Generate AI answer using OpenAI
+        ai_answer = await generate_ai_answer(request.query, retrieved_content)
+        
+        # Step 3: Return structured response
+        return AskQueryRAGResponse(
+            success=True,
+            message="AI answer generated successfully",
+            query=request.query,
+            answer=ai_answer,
+            retrieved_content=retrieved_content,
+            total_retrieved=total_retrieved
+        )
+        
+    except Exception as e:
+        # Handle cases where retrieval works but AI fails
+        try:
+            rag_result = await fetch_rag_internal(request.query, request.top_k)
+            retrieved_content = rag_result.get("results", [])
+            
+            return AskQueryRAGResponse(
+                success=False,
+                message=f"AI processing failed, but retrieved content available: {str(e)}",
+                query=request.query,
+                answer="Sorry, I couldn't generate an answer due to a technical issue, but I found some relevant content below.",
+                retrieved_content=retrieved_content,
+                total_retrieved=len(retrieved_content)
+            )
+        except:
+            raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+async def generate_ai_answer(query: str, retrieved_content: List[Dict[str, Any]]) -> str:
+    """Generate AI answer using OpenAI based on retrieved content"""
+    try:
+        import openai
+        
+        # Handle case where no content was retrieved
+        if not retrieved_content:
+            return """I apologize, but I couldn't find any relevant content in the knowledge base to answer your question. 
+
+This could mean:
+- The information you're looking for hasn't been uploaded to the system yet
+- Your question might need to be phrased differently
+- The content might be in a different format or context
+
+Please try rephrasing your question or check if the relevant documents have been properly uploaded and processed."""
+
+        # Prepare context from retrieved content
+        context_parts = []
+        for i, content in enumerate(retrieved_content, 1):
+            source_info = f"Source {i} (from {content.get('filename', 'unknown')} - {content.get('file_type', 'unknown')})"
+            context_parts.append(f"{source_info}:\n{content.get('content', '')}")
+        
+        context = "\n\n---\n\n".join(context_parts)
+        
+        # Create comprehensive prompt for OpenAI
+        prompt = f"""You are a helpful AI assistant answering questions based on retrieved content from a knowledge base.
+
+INSTRUCTIONS:
+1. Answer the user's question using ONLY the provided retrieved content
+2. If the retrieved content doesn't contain enough information, clearly state this
+3. Cite which sources you're using (Source 1, Source 2, etc.)
+4. Be accurate and don't make up information not in the content
+5. If the content is unclear or contradictory, mention this
+6. Provide a clear, well-structured answer
+
+USER QUESTION: {query}
+
+RETRIEVED CONTENT:
+{context}
+
+ANSWER:"""
+
+        # Call OpenAI API
+        response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that answers questions based only on provided content. Always cite your sources and be honest about limitations."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000,
+            temperature=0.3  # Lower temperature for more factual responses
+        )
+        
+        ai_answer = response.choices[0].message.content.strip()
+        
+        # Add metadata about the response
+        answer_with_meta = f"""{ai_answer}
+
+---
+📊 Response generated from {len(retrieved_content)} retrieved content chunks.
+🎯 Similarity scores: {', '.join([f"{r.get('score', 0):.3f}" for r in retrieved_content[:3]])}{'...' if len(retrieved_content) > 3 else ''}"""
+
+        return answer_with_meta
+        
+    except Exception as e:
+        return f"""I apologize, but I encountered an error while generating the answer: {str(e)}
+
+However, I was able to retrieve some potentially relevant content which you can review below in the retrieved_content section.
+
+Please try your question again, or contact support if this error persists."""
 
 
 @app.get("/")

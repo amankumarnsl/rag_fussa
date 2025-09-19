@@ -1,7 +1,7 @@
 sample_data.pdf
 sample_data.mp4
 chunk_data/
-extracted_data/
+extracted_texts/
 pdf-to-text-and-chunking-f34ff560eaca.json
 
 # Python

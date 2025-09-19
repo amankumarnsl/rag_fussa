@@ -428,45 +428,45 @@ Please try rephrasing your question or check if the relevant documents have been
         
         context = "\n\n---\n\n".join(context_parts)
         
-        # Create comprehensive prompt for OpenAI
-        prompt = f"""You are a helpful AI assistant answering questions based on retrieved content from a knowledge base.
+        # Create natural, user-friendly prompt for OpenAI
+        prompt = f"""You are a knowledgeable expert providing helpful information. Answer the user's question in a natural, conversational way.
 
-INSTRUCTIONS:
-1. Answer the user's question using ONLY the provided retrieved content
-2. If the retrieved content doesn't contain enough information, clearly state this
-3. Cite which sources you're using (Source 1, Source 2, etc.)
-4. Be accurate and don't make up information not in the content
-5. If the content is unclear or contradictory, mention this
-6. Provide a clear, well-structured answer
+WRITING STYLE REQUIREMENTS:
+- Write in a natural, friendly tone as if you're an expert explaining to a friend
+- Use clear structure with bullet points, numbered lists, or sections when helpful
+- Break up long paragraphs into digestible chunks
+- Use bold formatting (**text**) for key points
+- Don't mention "retrieved content", "sources", or "knowledge base"
+- Write as if this is your own knowledge and expertise
+- Make it engaging and easy to read
+
+CONTENT GUIDELINES:
+- Only use information from the provided context below
+- If the context doesn't fully answer the question, acknowledge what you can answer and what's missing
+- Be accurate and don't add information not in the context
+- If information seems incomplete or unclear, mention this naturally
 
 USER QUESTION: {query}
 
-RETRIEVED CONTENT:
+CONTEXT INFORMATION:
 {context}
 
-ANSWER:"""
+Please provide a comprehensive, well-structured answer:"""
 
         # Call OpenAI API
         response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that answers questions based only on provided content. Always cite your sources and be honest about limitations."},
+                {"role": "system", "content": "You are a helpful expert who provides clear, well-structured answers. Write naturally and conversationally, using formatting to make information easy to read. Only use the provided context information."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1000,
-            temperature=0.3  # Lower temperature for more factual responses
+            max_tokens=1200,
+            temperature=0.4  # Slightly higher for more natural language
         )
         
         ai_answer = response.choices[0].message.content.strip()
         
-        # Add metadata about the response
-        answer_with_meta = f"""{ai_answer}
-
----
-📊 Response generated from {len(retrieved_content)} retrieved content chunks.
-🎯 Similarity scores: {', '.join([f"{r.get('score', 0):.3f}" for r in retrieved_content[:3]])}{'...' if len(retrieved_content) > 3 else ''}"""
-
-        return answer_with_meta
+        return ai_answer  # Return clean answer without metadata
         
     except Exception as e:
         return f"""I apologize, but I encountered an error while generating the answer: {str(e)}

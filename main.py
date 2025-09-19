@@ -428,10 +428,16 @@ Please try rephrasing your question or check if the relevant documents have been
         
         context = "\n\n---\n\n".join(context_parts)
         
-        # Create natural, user-friendly prompt for OpenAI
+        # Create natural, user-friendly prompt for OpenAI with strict content relevance
         prompt = f"""You are a knowledgeable expert providing helpful information. Answer the user's question in a natural, conversational way.
 
-WRITING STYLE REQUIREMENTS:
+CRITICAL RULE - CONTENT RELEVANCE:
+- FIRST, carefully analyze if the provided context information actually contains relevant information to answer the user's question
+- If the context does NOT contain relevant information to answer the question, you MUST respond with: "I'm sorry, but I don't have information about that topic in my current knowledge base. Please try asking about something else or upload relevant documents first."
+- NEVER answer questions using general knowledge if the context doesn't contain relevant information
+- ONLY answer if the context actually addresses the user's question
+
+WRITING STYLE REQUIREMENTS (only if context is relevant):
 - Write in a natural, friendly tone as if you're an expert explaining to a friend
 - Use clear structure with bullet points, numbered lists, or sections when helpful
 - Break up long paragraphs into digestible chunks
@@ -442,7 +448,7 @@ WRITING STYLE REQUIREMENTS:
 
 CONTENT GUIDELINES:
 - Only use information from the provided context below
-- If the context doesn't fully answer the question, acknowledge what you can answer and what's missing
+- If the context partially answers the question, provide what you can and mention what's missing
 - Be accurate and don't add information not in the context
 - If information seems incomplete or unclear, mention this naturally
 
@@ -451,17 +457,17 @@ USER QUESTION: {query}
 CONTEXT INFORMATION:
 {context}
 
-Please provide a comprehensive, well-structured answer:"""
+Please provide a comprehensive, well-structured answer (or politely decline if context is not relevant):"""
 
         # Call OpenAI API
         response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a helpful expert who provides clear, well-structured answers. Write naturally and conversationally, using formatting to make information easy to read. Only use the provided context information."},
+                {"role": "system", "content": "You are a helpful expert who ONLY answers questions if the provided context contains relevant information. If the context is not relevant to the question, you must politely decline. Never use general knowledge. Write naturally and conversationally when you do answer."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=1200,
-            temperature=0.4  # Slightly higher for more natural language
+            temperature=0.3  # Lower temperature for strict adherence to context
         )
         
         ai_answer = response.choices[0].message.content.strip()

@@ -586,36 +586,36 @@ async def generate_conversational_ai_answer(chat_id: str, query: str, retrieved_
         
         context = "\n\n---\n\n".join(context_parts)
         
-        # Create input with context and SMART relevance detection
-        input_message = f"""You are an expert assistant that answers questions using ONLY the provided context information. Follow these rules:
+        # Create input with improved relevance detection
+        input_message = f"""You are an expert assistant that answers questions using the provided context information. Follow these guidelines:
 
-RELEVANCE DETECTION RULES:
-1. CAREFULLY analyze the context to find information that relates to the user's question
-2. Look for RELATED CONCEPTS, synonyms, and connected topics (e.g., "stress" relates to "worry", "rights" relates to "fundamental rights")
-3. If the context contains ANY information that helps answer the question, use it
-4. Consider legal documents, technical content, and specialized terminology as potentially relevant
-5. Only decline if the context is COMPLETELY unrelated to the question topic
+RELEVANCE GUIDELINES:
+- Analyze the context to find any information that relates to the user's question
+- Look for related concepts, synonyms, and connected topics
+- If the context contains useful information about the topic, use it to answer
+- If the context has partial information, provide what you can and mention what's missing
+- Only decline if the context has absolutely no connection to the question
 
-STRICT CONTENT RULES:
-- NEVER add information not in the context
-- NEVER use your general knowledge to supplement the context
-- If context is partially relevant, answer what you can and mention what's missing
-- If context is completely irrelevant, respond: "I'm sorry, but I don't have information about that topic in my current knowledge base. Please try asking about something else or upload relevant documents first."
+CONTENT RULES:
+- Use only information from the provided context
+- Never add information not in the context
+- Never use your general knowledge to supplement
+- If context partially addresses the question, answer what you can
+- Be honest about limitations when information is incomplete
 
 CONTEXT INFORMATION:
 {context}
 
 USER QUESTION: {query}
 
-WRITING REQUIREMENTS (if context is relevant):
-- Extract and organize information directly from the context
+WRITING STYLE:
 - Write naturally and conversationally
 - Use bullet points, numbered lists, and bold formatting for clarity
 - Don't mention "context", "retrieved content", or "based on information provided"
-- Present the information as your own expertise
-- If context only partially answers the question, provide what you can and note what's missing
+- Present information as your expertise
+- If context only covers part of the question, provide available information and note what's missing
 
-ANALYZE CAREFULLY: Does the context contain information related to the question? If yes, use it. If completely unrelated, decline."""
+Analyze the context and provide the best answer you can based on the available information."""
 
         # Check if chat has previous conversation
         previous_response_id = user_openai_conversations.get(chat_id)
@@ -628,7 +628,7 @@ ANALYZE CAREFULLY: Does the context contain information related to the question?
                 input=input_message,
                 previous_response_id=previous_response_id,  # Continue conversation
                 max_output_tokens=1200,
-                temperature=0.1  # Very low temperature for strict adherence
+                temperature=0.3  # Balanced temperature for better relevance detection
             )
         else:
             # Start new conversation
@@ -637,7 +637,7 @@ ANALYZE CAREFULLY: Does the context contain information related to the question?
                 model="gpt-4o",
                 input=input_message,
                 max_output_tokens=1200,
-                temperature=0.1  # Very low temperature for strict adherence
+                temperature=0.3  # Balanced temperature for better relevance detection
             )
         
         # Store response ID for future conversation continuity

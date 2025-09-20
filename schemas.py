@@ -17,6 +17,7 @@ class RAGQueryRequest(BaseModel):
 
 class AskQueryRAGRequest(BaseModel):
     query: str = Field(..., description="Question to ask the RAG system")
+    user_id: str = Field(..., description="Unique user identifier for conversation tracking")
     top_k: Optional[int] = Field(5, description="Number of chunks to retrieve for context")
 
 
@@ -46,6 +47,7 @@ class AskQueryRAGResponse(BaseModel):
     success: bool
     message: str
     query: str
+    user_id: str
     answer: str
     retrieved_content: Optional[List[Dict[str, Any]]] = None
     total_retrieved: Optional[int] = None

@@ -81,6 +81,7 @@ def get_pdf_info(pdf_content):
     Returns:
         dict: PDF information
     """
+    
     try:
         # Open PDF from bytes
         pdf_document = fitz.open(stream=pdf_content, filetype="pdf")

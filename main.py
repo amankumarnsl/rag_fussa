@@ -2,7 +2,7 @@ import os
 import io
 import boto3
 import openai
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import PyPDF2
@@ -40,17 +40,22 @@ image_index = pc.Index(PINECONE_IMAGE_INDEX)
 
 openai.api_key = OPENAI_API_KEY
 
+# Global configuration
+DEFAULT_TOP_K = 3  # Default number of chunks to retrieve
+
 # In-memory conversation storage for backup
 user_conversations = {}
 
 # OpenAI conversation tracking (Response API)
-user_openai_conversations = {}  # {user_id: previous_response_id}
+user_openai_conversations = {}  # {chat_id: previous_response_id}
 
 
 def extract_filename_from_s3_url(s3_url):
     """Extract filename from S3 URL."""
     parsed_url = urlparse(str(s3_url))
     object_key = parsed_url.path.lstrip('/')
+    # URL decode the object key to handle special characters (Arabic, spaces, etc.)
+    object_key = unquote(object_key)
     filename = os.path.basename(object_key)
     return filename
 
@@ -92,14 +97,16 @@ def get_embeddings(texts):
     return [item.embedding for item in response.data]
 
 
-@app.post("/train", response_model=TrainResponse)
+@app.post("/ai-service/internal/process-document-data", response_model=TrainResponse)
 async def train(request: TrainRequest):
     try:
         # Parse S3 URL and extract filename
-        parsed_url = urlparse(str(request.s3_url))
+        parsed_url = urlparse(str(request.url))
         bucket_name = parsed_url.netloc.split('.')[0]
         object_key = parsed_url.path.lstrip('/')
-        filename = extract_filename_from_s3_url(request.s3_url)
+        # URL decode the object key to handle special characters (Arabic, spaces, etc.)
+        object_key = unquote(object_key)
+        filename = extract_filename_from_s3_url(request.url)
         
         # Download file from S3
         response = s3_client.get_object(Bucket=bucket_name, Key=object_key)
@@ -146,7 +153,11 @@ async def train(request: TrainRequest):
                 "id": vector_id,
                 "values": embedding,
                 "metadata": {
-                    "s3_url": str(request.s3_url),
+                    "name": request.name,
+                    "uuid": request.uuid,
+                    "url": str(request.url),
+                    "type": request.type,
+                    "trainingStatus": request.trainingStatus,
                     "filename": filename,
                     "chunk_index": i,
                     "content": chunk["content"],
@@ -161,7 +172,11 @@ async def train(request: TrainRequest):
         return TrainResponse(
             success=True,
             message=f"Successfully trained {file_type} file: {filename}",
-            s3_url=str(request.s3_url),
+            name=request.name,
+            uuid=request.uuid,
+            url=str(request.url),
+            type=request.type,
+            trainingStatus="completed",
             file_type=file_type,
             chunks_created=len(processed_chunks)
         )
@@ -173,7 +188,7 @@ async def train(request: TrainRequest):
 @app.post("/untrain", response_model=UntrainResponse)
 async def untrain(request: UntrainRequest):
     try:
-        # Extract filename from S3 URL
+        # Extract filename from S3 URL (URL decoding handled in extract_filename_from_s3_url)
         filename = extract_filename_from_s3_url(request.s3_url)
         file_extension = filename.split('.')[-1].lower()
         file_type = get_file_type(file_extension)
@@ -362,12 +377,12 @@ async def fetch_rag(request: RAGQueryRequest):
         raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")
 
 
-def save_conversation_locally(user_id: str, query: str, answer: str):
+def save_conversation_locally(chat_id: str, query: str, answer: str):
     """Save conversation to local storage for backup purposes"""
     import datetime
     
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
+    if chat_id not in user_conversations:
+        user_conversations[chat_id] = []
     
     conversation_entry = {
         "timestamp": datetime.datetime.now().isoformat(),
@@ -375,17 +390,17 @@ def save_conversation_locally(user_id: str, query: str, answer: str):
         "answer": answer
     }
     
-    user_conversations[user_id].append(conversation_entry)
-    print(f"💾 Saved conversation for user {user_id} (total: {len(user_conversations[user_id])} messages)")
+    user_conversations[chat_id].append(conversation_entry)
+    print(f"💾 Saved conversation for chat {chat_id} (total: {len(user_conversations[chat_id])} messages)")
 
 
-async def classify_query_type(user_id: str, query: str) -> str:
+async def classify_query_type(chat_id: str, query: str) -> str:
     """Classify if query is general conversation or knowledge question using GPT-4o-mini"""
     try:
         import openai
         
         # Get conversation history for context
-        conversation_history = user_conversations.get(user_id, [])
+        conversation_history = user_conversations.get(chat_id, [])
         
         # Build conversation context
         context = ""
@@ -432,13 +447,13 @@ Respond with ONLY one word: GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"""
         return "KNOWLEDGE_QUESTION"  # Default to RAG if classification fails
 
 
-async def generate_general_conversation_answer(user_id: str, query: str) -> str:
+async def generate_general_conversation_answer(chat_id: str, query: str) -> str:
     """Generate general conversation response without RAG using OpenAI responses.create()"""
     try:
         import openai
         
-        # Check if user has previous conversation
-        previous_response_id = user_openai_conversations.get(user_id)
+        # Check if chat has previous conversation
+        previous_response_id = user_openai_conversations.get(chat_id)
         
         # Create conversational input
         input_message = f"""User says: {query}
@@ -447,7 +462,7 @@ Please respond naturally and conversationally. This is general conversation, not
 
         if previous_response_id:
             # Continue existing conversation
-            print(f"💬 Continuing general conversation for user {user_id}")
+            print(f"💬 Continuing general conversation for chat {chat_id}")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
@@ -457,7 +472,7 @@ Please respond naturally and conversationally. This is general conversation, not
             )
         else:
             # Start new conversation
-            print(f"🆕 Starting new general conversation for user {user_id}")
+            print(f"🆕 Starting new general conversation for chat {chat_id}")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
@@ -466,11 +481,11 @@ Please respond naturally and conversationally. This is general conversation, not
             )
         
         # Store response ID for future conversation continuity
-        user_openai_conversations[user_id] = response.id
+        user_openai_conversations[chat_id] = response.id
         
         ai_answer = response.output_text.strip()
         
-        print(f"💬 Generated general conversation response for user {user_id}")
+        print(f"💬 Generated general conversation response for chat {chat_id}")
         return ai_answer
         
     except Exception as e:
@@ -478,14 +493,14 @@ Please respond naturally and conversationally. This is general conversation, not
         return "Hello! I'm here to help you with any questions you might have. How can I assist you today?"
 
 
-@app.post("/ask-query-rag", response_model=AskQueryRAGResponse)
+@app.post("/ai-service/internal/ask-query-rag", response_model=AskQueryRAGResponse)
 async def ask_query_rag(request: AskQueryRAGRequest):
     """Ask a question to the RAG system with conversational context using user_id"""
     try:
-        print(f"🤖 Processing AI query for user {request.user_id}: {request.query}")
+        print(f"🤖 Processing AI query for chat {request.chat_id}: {request.query}")
         
         # Step 1: Retrieve relevant content using fetch_rag_internal
-        rag_result = await fetch_rag_internal(request.query, request.top_k)
+        rag_result = await fetch_rag_internal(request.query, DEFAULT_TOP_K)
         
         if not rag_result["success"]:
             raise HTTPException(status_code=500, detail=f"Content retrieval failed: {rag_result['error']}")
@@ -493,40 +508,40 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         retrieved_content = rag_result["results"]
         total_retrieved = rag_result["total_retrieved"]
         
-        print(f"📚 Retrieved {total_retrieved} relevant chunks for user {request.user_id}")
+        print(f"📚 Retrieved {total_retrieved} relevant chunks for chat {request.chat_id}")
         
         # Step 2: Classify query type using GPT-4o-mini
-        query_type = await classify_query_type(request.user_id, request.query)
+        query_type = await classify_query_type(request.chat_id, request.query)
         
         if query_type == "GENERAL_CONVERSATION":
             # Handle general conversation without RAG
-            print(f"💬 General conversation detected for user {request.user_id}")
-            ai_answer = await generate_general_conversation_answer(request.user_id, request.query)
+            print(f"💬 General conversation detected for chat {request.chat_id}")
+            ai_answer = await generate_general_conversation_answer(request.chat_id, request.query)
             
             # Return response without retrieved content for general chat
             return AskQueryRAGResponse(
                 success=True,
                 message="General conversation response",
                 query=request.query,
-                user_id=request.user_id,
+                chat_id=request.chat_id,
                 answer=ai_answer,
                 retrieved_content=[],
                 total_retrieved=0
             )
         else:
             # Handle knowledge question with RAG
-            print(f"🔍 Knowledge question detected for user {request.user_id}")
-            ai_answer = await generate_conversational_ai_answer(request.user_id, request.query, retrieved_content)
+            print(f"🔍 Knowledge question detected for chat {request.chat_id}")
+            ai_answer = await generate_conversational_ai_answer(request.chat_id, request.query, retrieved_content)
         
         # Step 3: Save conversation locally for backup
-        save_conversation_locally(request.user_id, request.query, ai_answer)
+        save_conversation_locally(request.chat_id, request.query, ai_answer)
         
         # Step 4: Return structured response
         return AskQueryRAGResponse(
             success=True,
             message="AI answer generated successfully",
             query=request.query,
-            user_id=request.user_id,
+            chat_id=request.chat_id,
             answer=ai_answer,
             retrieved_content=retrieved_content,
             total_retrieved=total_retrieved
@@ -535,18 +550,18 @@ async def ask_query_rag(request: AskQueryRAGRequest):
     except Exception as e:
         # Handle cases where retrieval works but AI fails
         try:
-            rag_result = await fetch_rag_internal(request.query, request.top_k)
+            rag_result = await fetch_rag_internal(request.query, DEFAULT_TOP_K)
             retrieved_content = rag_result.get("results", [])
             
             # Save failed attempt locally
             error_answer = "Sorry, I couldn't generate an answer due to a technical issue, but I found some relevant content below."
-            save_conversation_locally(request.user_id, request.query, error_answer)
+            save_conversation_locally(request.chat_id, request.query, error_answer)
             
             return AskQueryRAGResponse(
                 success=False,
                 message=f"AI processing failed, but retrieved content available: {str(e)}",
                 query=request.query,
-                user_id=request.user_id,
+                chat_id=request.chat_id,
                 answer=error_answer,
                 retrieved_content=retrieved_content,
                 total_retrieved=len(retrieved_content)
@@ -555,7 +570,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
-async def generate_conversational_ai_answer(user_id: str, query: str, retrieved_content: List[Dict[str, Any]]) -> str:
+async def generate_conversational_ai_answer(chat_id: str, query: str, retrieved_content: List[Dict[str, Any]]) -> str:
     """Generate conversational AI answer using OpenAI responses.create() with conversation tracking"""
     try:
         import openai
@@ -571,50 +586,66 @@ async def generate_conversational_ai_answer(user_id: str, query: str, retrieved_
         
         context = "\n\n---\n\n".join(context_parts)
         
-        # Create input with context and query
-        input_message = f"""Based on the following context information, please answer the user's question:
+        # Create input with context and SMART relevance detection
+        input_message = f"""You are an expert assistant that answers questions using ONLY the provided context information. Follow these rules:
 
-CONTEXT:
+RELEVANCE DETECTION RULES:
+1. CAREFULLY analyze the context to find information that relates to the user's question
+2. Look for RELATED CONCEPTS, synonyms, and connected topics (e.g., "stress" relates to "worry", "rights" relates to "fundamental rights")
+3. If the context contains ANY information that helps answer the question, use it
+4. Consider legal documents, technical content, and specialized terminology as potentially relevant
+5. Only decline if the context is COMPLETELY unrelated to the question topic
+
+STRICT CONTENT RULES:
+- NEVER add information not in the context
+- NEVER use your general knowledge to supplement the context
+- If context is partially relevant, answer what you can and mention what's missing
+- If context is completely irrelevant, respond: "I'm sorry, but I don't have information about that topic in my current knowledge base. Please try asking about something else or upload relevant documents first."
+
+CONTEXT INFORMATION:
 {context}
 
 USER QUESTION: {query}
 
-INSTRUCTIONS:
-- ONLY answer if the context contains relevant information to the question
-- If context is NOT relevant, respond: "I'm sorry, but I don't have information about that topic in my current knowledge base. Please try asking about something else or upload relevant documents first."
-- Write naturally and conversationally with clear formatting
-- Use bullet points and bold text (**text**) for better readability
-- Don't mention "context" or "retrieved content" in your answer"""
+WRITING REQUIREMENTS (if context is relevant):
+- Extract and organize information directly from the context
+- Write naturally and conversationally
+- Use bullet points, numbered lists, and bold formatting for clarity
+- Don't mention "context", "retrieved content", or "based on information provided"
+- Present the information as your own expertise
+- If context only partially answers the question, provide what you can and note what's missing
 
-        # Check if user has previous conversation
-        previous_response_id = user_openai_conversations.get(user_id)
+ANALYZE CAREFULLY: Does the context contain information related to the question? If yes, use it. If completely unrelated, decline."""
+
+        # Check if chat has previous conversation
+        previous_response_id = user_openai_conversations.get(chat_id)
         
         if previous_response_id:
             # Continue existing conversation
-            print(f"💬 Continuing conversation for user {user_id} (previous: {previous_response_id})")
+            print(f"💬 Continuing conversation for chat {chat_id} (previous: {previous_response_id})")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
                 previous_response_id=previous_response_id,  # Continue conversation
                 max_output_tokens=1200,
-                temperature=0.3
+                temperature=0.1  # Very low temperature for strict adherence
             )
         else:
             # Start new conversation
-            print(f"🆕 Starting new conversation for user {user_id}")
+            print(f"🆕 Starting new conversation for chat {chat_id}")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
                 max_output_tokens=1200,
-                temperature=0.3
+                temperature=0.1  # Very low temperature for strict adherence
             )
         
         # Store response ID for future conversation continuity
-        user_openai_conversations[user_id] = response.id
+        user_openai_conversations[chat_id] = response.id
         
         ai_answer = response.output_text.strip()
         
-        print(f"💬 Generated conversational response for user {user_id} (response_id: {response.id})")
+        print(f"💬 Generated conversational response for chat {chat_id} (response_id: {response.id})")
         return ai_answer
         
     except Exception as e:

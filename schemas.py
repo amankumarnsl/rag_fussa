@@ -3,7 +3,11 @@ from typing import Optional, List, Dict, Any
 
 
 class TrainRequest(BaseModel):
-    s3_url: HttpUrl = Field(..., description="AWS S3 URL of the file to process")
+    name: str = Field(..., description="Name of the document")
+    uuid: str = Field(..., description="Unique identifier for the document")
+    url: HttpUrl = Field(..., description="AWS S3 URL of the file to process")
+    type: str = Field(..., description="Type of the document")
+    trainingStatus: str = Field(..., description="Training status of the document")
 
 
 class UntrainRequest(BaseModel):
@@ -17,14 +21,17 @@ class RAGQueryRequest(BaseModel):
 
 class AskQueryRAGRequest(BaseModel):
     query: str = Field(..., description="Question to ask the RAG system")
-    user_id: str = Field(..., description="Unique user identifier for conversation tracking")
-    top_k: Optional[int] = Field(5, description="Number of chunks to retrieve for context")
+    chat_id: str = Field(..., description="Unique chat identifier for conversation tracking")
 
 
 class TrainResponse(BaseModel):
     success: bool
     message: str
-    s3_url: Optional[str] = None
+    name: Optional[str] = None
+    uuid: Optional[str] = None
+    url: Optional[str] = None
+    type: Optional[str] = None
+    trainingStatus: Optional[str] = None
     file_type: Optional[str] = None
     chunks_created: Optional[int] = None
 
@@ -47,7 +54,7 @@ class AskQueryRAGResponse(BaseModel):
     success: bool
     message: str
     query: str
-    user_id: str
+    chat_id: str
     answer: str
     retrieved_content: Optional[List[Dict[str, Any]]] = None
     total_retrieved: Optional[int] = None

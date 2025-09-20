@@ -610,12 +610,13 @@ USER QUESTION: {query}
 
 WRITING STYLE:
 - Write naturally and conversationally
-- Use bullet points, numbered lists, and bold formatting for clarity
-- Don't mention "context", "retrieved content", or "based on information provided"
 - Present information as your expertise
+- Don't mention "context", "retrieved content", or "based on information provided"
 - If context only covers part of the question, provide available information and note what's missing
+- Use bullet points and clear structure when helpful
+- Keep paragraphs concise and readable
 
-Analyze the context and provide the best answer you can based on the available information."""
+Provide a clear, natural answer based on the available information."""
 
         # Check if chat has previous conversation
         previous_response_id = user_openai_conversations.get(chat_id)
@@ -650,9 +651,7 @@ Analyze the context and provide the best answer you can based on the available i
         
     except Exception as e:
         print(f"❌ Conversational AI failed: {str(e)}")
-        return f"""I apologize, but I encountered an error while generating the answer: {str(e)}
-
-Please try your question again, or contact support if this error persists."""
+        return "I apologize, but I encountered an error while generating the answer. Please try your question again, or contact support if this error persists."
 
 
 @app.get("/")

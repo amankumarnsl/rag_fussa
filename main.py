@@ -493,14 +493,20 @@ Please respond naturally and conversationally. This is general conversation, not
         return "Hello! I'm here to help you with any questions you might have. How can I assist you today?"
 
 
-@app.post("/ai-service/internal/ask-query-rag", response_model=AskQueryRAGResponse)
+@app.post("/ai-service/internal/ask-question", response_model=AskQueryRAGResponse)
 async def ask_query_rag(request: AskQueryRAGRequest):
-    """Ask a question to the RAG system with conversational context using user_id"""
+    """Ask a question to the RAG system with conversational context using conversation_id"""
     try:
-        print(f"🤖 Processing AI query for chat {request.chat_id}: {request.query}")
+        print(f"🤖 Processing AI query for conversation {request.conversationId}: {request.question}")
+        
+        # Handle DOCUMENT type messages (placeholder for now)
+        if request.type == "DOCUMENT":
+            print(f"📄 Document type message received with {len(request.documents) if request.documents else 0} documents")
+            # TODO: Process documents and add to context
+            # For now, just process the message normally
         
         # Step 1: Retrieve relevant content using fetch_rag_internal
-        rag_result = await fetch_rag_internal(request.query, DEFAULT_TOP_K)
+        rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K)
         
         if not rag_result["success"]:
             raise HTTPException(status_code=500, detail=f"Content retrieval failed: {rag_result['error']}")
@@ -508,40 +514,38 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         retrieved_content = rag_result["results"]
         total_retrieved = rag_result["total_retrieved"]
         
-        print(f"📚 Retrieved {total_retrieved} relevant chunks for chat {request.chat_id}")
+        print(f"📚 Retrieved {total_retrieved} relevant chunks for conversation {request.conversationId}")
         
         # Step 2: Classify query type using GPT-4o-mini
-        query_type = await classify_query_type(request.chat_id, request.query)
+        query_type = await classify_query_type(request.conversationId, request.question)
         
         if query_type == "GENERAL_CONVERSATION":
             # Handle general conversation without RAG
-            print(f"💬 General conversation detected for chat {request.chat_id}")
-            ai_answer = await generate_general_conversation_answer(request.chat_id, request.query)
+            print(f"💬 General conversation detected for conversation {request.conversationId}")
+            ai_answer = await generate_general_conversation_answer(request.conversationId, request.question)
             
             # Return response without retrieved content for general chat
             return AskQueryRAGResponse(
                 success=True,
                 message="General conversation response",
-                query=request.query,
-                chat_id=request.chat_id,
+                conversationId=request.conversationId,
                 answer=ai_answer,
                 retrieved_content=[],
                 total_retrieved=0
             )
         else:
             # Handle knowledge question with RAG
-            print(f"🔍 Knowledge question detected for chat {request.chat_id}")
-            ai_answer = await generate_conversational_ai_answer(request.chat_id, request.query, retrieved_content)
+            print(f"🔍 Knowledge question detected for conversation {request.conversationId}")
+            ai_answer = await generate_conversational_ai_answer(request.conversationId, request.question, retrieved_content)
         
         # Step 3: Save conversation locally for backup
-        save_conversation_locally(request.chat_id, request.query, ai_answer)
+        save_conversation_locally(request.conversationId, request.question, ai_answer)
         
         # Step 4: Return structured response
         return AskQueryRAGResponse(
             success=True,
             message="AI answer generated successfully",
-            query=request.query,
-            chat_id=request.chat_id,
+            conversationId=request.conversationId,
             answer=ai_answer,
             retrieved_content=retrieved_content,
             total_retrieved=total_retrieved
@@ -550,18 +554,17 @@ async def ask_query_rag(request: AskQueryRAGRequest):
     except Exception as e:
         # Handle cases where retrieval works but AI fails
         try:
-            rag_result = await fetch_rag_internal(request.query, DEFAULT_TOP_K)
+            rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K)
             retrieved_content = rag_result.get("results", [])
             
             # Save failed attempt locally
             error_answer = "Sorry, I couldn't generate an answer due to a technical issue, but I found some relevant content below."
-            save_conversation_locally(request.chat_id, request.query, error_answer)
+            save_conversation_locally(request.conversationId, request.question, error_answer)
             
             return AskQueryRAGResponse(
                 success=False,
                 message=f"AI processing failed, but retrieved content available: {str(e)}",
-                query=request.query,
-                chat_id=request.chat_id,
+                conversationId=request.conversationId,
                 answer=error_answer,
                 retrieved_content=retrieved_content,
                 total_retrieved=len(retrieved_content)

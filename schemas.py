@@ -19,9 +19,16 @@ class RAGQueryRequest(BaseModel):
     top_k: Optional[int] = 5
 
 
+class DocumentInfo(BaseModel):
+    url: HttpUrl = Field(..., description="URL of the document")
+    type: str = Field(..., description="Type of the document (PDF, IMAGE, AUDIO, etc.)")
+
+
 class AskQueryRAGRequest(BaseModel):
-    query: str = Field(..., description="Question to ask the RAG system")
-    chat_id: str = Field(..., description="Unique chat identifier for conversation tracking")
+    conversationId: str = Field(..., description="Unique conversation identifier")
+    type: str = Field(..., description="Message type: TEXT or DOCUMENT")
+    question: str = Field(..., description="Question to ask the RAG system")
+    documents: Optional[List[DocumentInfo]] = Field(None, description="Additional documents (for DOCUMENT type)")
 
 
 class TrainResponse(BaseModel):
@@ -53,8 +60,7 @@ class RAGQueryResponse(BaseModel):
 class AskQueryRAGResponse(BaseModel):
     success: bool
     message: str
-    query: str
-    chat_id: str
+    conversationId: str
     answer: str
     retrieved_content: Optional[List[Dict[str, Any]]] = None
     total_retrieved: Optional[int] = None

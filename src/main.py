@@ -448,7 +448,7 @@ Respond with ONLY one word: GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"""
 
 
 async def generate_general_conversation_answer(chat_id: str, query: str) -> str:
-    """Generate general conversation response without RAG using OpenAI responses.create()"""
+    """Generate general conversation response with conversation context support using OpenAI responses.create()"""
     try:
         import openai
         
@@ -458,21 +458,31 @@ async def generate_general_conversation_answer(chat_id: str, query: str) -> str:
         # Create conversational input
         input_message = f"""User says: {query}
 
-You are handling ONLY general conversation. Decide between two behaviors and output ONLY the final message text (no labels):
+You are handling general conversation. Decide between three behaviors and output ONLY the final message text (no labels):
 
 1) GREETING_REPLY
 - Trigger if the message is a greeting/pleasantry/small talk (hello, hi, hey, good morning, thanks, how are you, nice to meet you, what's up, good night) or a very short friendly check-in.
 - Respond warmly and briefly, 1-2 sentences max.
 
-2) POLITE_REFUSAL
-- Trigger for ANY other general/personal/open-ended question that is not tied to the user's uploaded knowledge (e.g., relationship advice, life coaching, opinions, generic facts, news, health/financial/legal advice, etc.).
-- Do NOT answer the question. Politely say you can't answer general questions and that you only answer using the user's uploaded knowledge base. Suggest adding relevant documents if they want help.
+2) CONVERSATION_CONTEXT
+- Trigger for questions about our current conversation, user's personal information shared in this chat, or past exchanges in this session.
+- Examples: "What's my name?", "What did I say earlier?", "What did you tell me about X?", "What was my first question?", "What did I ask you about my project?"
+- Answer these questions naturally using your conversation memory and context from this chat session.
+- Be helpful and reference what was discussed earlier.
+
+3) POLITE_REFUSAL
+- Trigger ONLY for general knowledge questions NOT related to our conversation (e.g., relationship advice, life coaching, opinions, generic facts, news, health/financial/legal advice, etc.).
+- Do NOT refuse questions about our current conversation or user's personal information shared in this chat.
+- Politely say you can't answer general questions and that you only answer using the user's uploaded knowledge base. Suggest adding relevant documents if they want help.
 - Keep to 1-2 sentences, kind and clear.
 
 Examples:
-- User: "hi can you help me to manage my break up with my gf?" → "I'm sorry, but I can't provide general personal advice. I only answer using information from your uploaded knowledge base. You can add relevant documents and ask again."
 - User: "hello" → "Hi there! Great to see you. How can I help today?"
-- User: "who is prime minister of india" → "Sorry, I can’t answer general questions. I only respond using your uploaded knowledge base."
+- User: "What's my name?" → "Your name is [name from conversation memory]"
+- User: "What did I say earlier?" → "You mentioned [specific content from conversation]"
+- User: "What did you tell me about my project?" → "I told you that [specific advice from conversation]"
+- User: "hi can you help me to manage my break up with my gf?" → "I'm sorry, but I can't provide general personal advice. I only answer using information from your uploaded knowledge base. You can add relevant documents and ask again."
+- User: "who is prime minister of india" → "Sorry, I can't answer general questions. I only respond using your uploaded knowledge base."
 """
 
         if previous_response_id:

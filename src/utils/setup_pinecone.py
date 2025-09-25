@@ -2,7 +2,16 @@
 Setup script to create Pinecone indexes for the RAG system
 """
 from pinecone import Pinecone, ServerlessSpec
-from config import *
+
+# Handle both relative and absolute imports
+try:
+    from ..config.config import *
+except ImportError:
+    # If running as standalone script, add parent directory to path
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    from src.config.config import *
 
 def setup_pinecone_indexes():
     """Create the required Pinecone indexes if they don't exist"""

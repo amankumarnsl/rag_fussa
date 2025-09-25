@@ -3,6 +3,12 @@ sample_data.mp4
 chunk_data/
 extracted_texts/
 pdf-to-text-and-chunking-f34ff560eaca.json
+# Keep folder, ignore contents
+data_extraction_visualize/*
+!data_extraction_visualize/.gitkeep
+
+data_to_upload_to_S3/*
+!data_to_upload_to_S3/.gitkeep
 
 # Python
 __pycache__/

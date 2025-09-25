@@ -2,7 +2,7 @@
 Image processing functionality
 """
 import base64
-from chunking import smart_chunk
+from ..utils.chunking import smart_chunk
 
 
 def extract_image_metadata(image_content, file_name):

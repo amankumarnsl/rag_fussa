@@ -31,13 +31,17 @@ def upload_pdf_to_s3():
         region_name=aws_region
     )
     
-    # File details
-    local_file = "sample_data.pdf"
-    s3_key = "documents/sample_data.pdf"  # Path in S3 bucket
+    # # File details
+    # local_file = "sample_data.pdf"
+    # s3_key = "documents/sample_data.pdf"  # Path in S3 bucket
 
-    # Video file
-    local_file = "sample_data.mp4"
-    s3_key = "documents/sample_data.mp4"  # Path in S3 bucket
+    # # Video file
+    # local_file = "sample_data.mp4"
+    # s3_key = "documents/sample_data.mp4"  # Path in S3 bucket
+
+    # Video file working file structure
+    local_file = "data_to_upload_to_S3/Handbook on Legal System & Procedure.pdf"
+    s3_key = "documents/Handbook on Legal System & Procedure.pdf"  # Path in S3 bucket
     
     try:
         # Check if file exists locally

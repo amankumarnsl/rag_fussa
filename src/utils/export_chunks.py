@@ -4,7 +4,15 @@ Export all chunks from Pinecone indexes to structured JSON files for visualizati
 import os
 import json
 from pinecone import Pinecone
-from config import *
+
+# Handle both relative and absolute imports
+try:
+    from ..config.config import *
+except ImportError:
+    # If running as standalone script, add parent directory to path
+    import sys
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    from src.config.config import *
 
 def create_chunk_structure():
     """Export all chunks from Pinecone to organized JSON files"""
@@ -13,7 +21,8 @@ def create_chunk_structure():
     pc = Pinecone(api_key=PINECONE_API_KEY)
     
     # Create main chunk_data directory
-    chunk_data_dir = "chunk_data"
+    
+    chunk_data_dir = os.path.join("data_extraction_visualize", "chunk_data")
     os.makedirs(chunk_data_dir, exist_ok=True)
     
     # Create subdirectories

@@ -1,7 +1,7 @@
 """
 Common text processing pipeline for all file types after text extraction
 """
-from smart_chunking import load_text_file, smart_chunk_text
+from .smart_chunking import load_text_file, smart_chunk_text
 
 
 def process_text_file_to_chunks(text_filepath: str, filename: str, file_type: str, chunk_strategy: str = "semantic"):

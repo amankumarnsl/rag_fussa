@@ -3,7 +3,7 @@ Video processing functionality
 """
 import os
 import tempfile
-from smart_chunking import process_extracted_text
+from ..utils.smart_chunking import process_extracted_text
 
 
 def extract_video_metadata(video_content, file_name):
@@ -164,7 +164,7 @@ def transcribe_audio_with_assemblyai(audio_path, file_name):
     """
     try:
         import assemblyai as aai
-        from config import ASSEMBLYAI_API_KEY
+        from ..config.config import ASSEMBLYAI_API_KEY
         
         # Set AssemblyAI API key
         aai.settings.api_key = ASSEMBLYAI_API_KEY
@@ -337,7 +337,7 @@ def process_video(video_content, file_name, chunk_strategy="semantic"):
         print(f"📊 Video transcript extracted: {len(transcript)} characters")
         
         # Save transcript to text file
-        from smart_chunking import save_extracted_text
+        from ..utils.smart_chunking import save_extracted_text
         text_filepath = save_extracted_text(transcript, file_name, "video")
         
         if not text_filepath:

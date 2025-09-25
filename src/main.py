@@ -7,12 +7,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import PyPDF2
 
-from config import *
-from schemas import *
-from pdf_processor import process_pdf, get_pdf_info
-from video_processor import process_video, is_video_file
-from image_processor import process_image, is_image_file
-from text_pipeline import process_text_file_to_chunks
+from .config.config import *
+from .config.schemas import *
+from .processors.pdf_processor import process_pdf, get_pdf_info
+from .processors.video_processor import process_video, is_video_file
+from .processors.image_processor import process_image, is_image_file
+from .utils.text_pipeline import process_text_file_to_chunks
 
 app = FastAPI(title="RAG FUSSA API", version="1.0.0")
 
@@ -679,4 +679,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)

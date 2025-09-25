@@ -3,7 +3,7 @@ PDF processing functionality
 """
 import io
 import fitz  # PyMuPDF
-from smart_chunking import process_extracted_text
+from ..utils.smart_chunking import process_extracted_text
 
 
 def extract_pdf_text(pdf_content):
@@ -59,7 +59,7 @@ def process_pdf(pdf_content, file_name, chunk_strategy="semantic"):
         print(f"📄 PDF text extracted: {len(text)} characters")
         
         # Save extracted text to file
-        from smart_chunking import save_extracted_text
+        from ..utils.smart_chunking import save_extracted_text
         text_filepath = save_extracted_text(text, file_name, "pdf")
         
         if not text_filepath:

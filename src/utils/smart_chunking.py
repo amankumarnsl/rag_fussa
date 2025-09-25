@@ -8,7 +8,7 @@ from langchain_text_splitters import (
     MarkdownHeaderTextSplitter
 )
 from langchain_openai import OpenAIEmbeddings
-from config import OPENAI_API_KEY
+from ..config.config import OPENAI_API_KEY
 
 
 def save_extracted_text(content: str, filename: str, file_type: str) -> str:
@@ -24,8 +24,8 @@ def save_extracted_text(content: str, filename: str, file_type: str) -> str:
         str: Path to saved text file
     """
     try:
-        # Create extracted_texts directory
-        extracted_dir = "extracted_texts"
+        # Create data_extracted_visualize/extracted_texts directory
+        extracted_dir = os.path.join("data_extraction_visualize", "extracted_texts")
         os.makedirs(extracted_dir, exist_ok=True)
         
         # Generate text filename
@@ -152,7 +152,7 @@ def get_paragraph_embeddings(paragraphs: List[str]) -> List[List[float]]:
     """Generate embeddings for paragraphs using text-embedding-3-small."""
     try:
         import openai
-        from config import OPENAI_API_KEY
+        from ..config.config import OPENAI_API_KEY
         
         openai.api_key = OPENAI_API_KEY
         

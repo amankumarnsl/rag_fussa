@@ -458,7 +458,22 @@ async def generate_general_conversation_answer(chat_id: str, query: str) -> str:
         # Create conversational input
         input_message = f"""User says: {query}
 
-Please respond naturally and conversationally. This is general conversation, not a knowledge question. Be friendly, helpful, and engaging."""
+You are handling ONLY general conversation. Decide between two behaviors and output ONLY the final message text (no labels):
+
+1) GREETING_REPLY
+- Trigger if the message is a greeting/pleasantry/small talk (hello, hi, hey, good morning, thanks, how are you, nice to meet you, what's up, good night) or a very short friendly check-in.
+- Respond warmly and briefly, 1-2 sentences max.
+
+2) POLITE_REFUSAL
+- Trigger for ANY other general/personal/open-ended question that is not tied to the user's uploaded knowledge (e.g., relationship advice, life coaching, opinions, generic facts, news, health/financial/legal advice, etc.).
+- Do NOT answer the question. Politely say you can't answer general questions and that you only answer using the user's uploaded knowledge base. Suggest adding relevant documents if they want help.
+- Keep to 1-2 sentences, kind and clear.
+
+Examples:
+- User: "hi can you help me to manage my break up with my gf?" → "I'm sorry, but I can't provide general personal advice. I only answer using information from your uploaded knowledge base. You can add relevant documents and ask again."
+- User: "hello" → "Hi there! Great to see you. How can I help today?"
+- User: "who is prime minister of india" → "Sorry, I can’t answer general questions. I only respond using your uploaded knowledge base."
+"""
 
         if previous_response_id:
             # Continue existing conversation
@@ -468,7 +483,7 @@ Please respond naturally and conversationally. This is general conversation, not
                 input=input_message,
                 previous_response_id=previous_response_id,
                 max_output_tokens=300,  # Shorter for general conversation
-                temperature=0.7  # Higher temperature for more natural conversation
+                temperature=0.2  # Lower temperature for more deterministic refusals
             )
         else:
             # Start new conversation
@@ -477,7 +492,7 @@ Please respond naturally and conversationally. This is general conversation, not
                 model="gpt-4o",
                 input=input_message,
                 max_output_tokens=300,
-                temperature=0.7
+                temperature=0.2
             )
         
         # Store response ID for future conversation continuity

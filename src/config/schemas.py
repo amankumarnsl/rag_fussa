@@ -11,7 +11,10 @@ class TrainRequest(BaseModel):
 
 
 class UntrainRequest(BaseModel):
-    s3_url: HttpUrl = Field(..., description="AWS S3 URL of the file to remove from Pinecone")
+    uuid: str = Field(..., description="Unique identifier for the document")
+    url: HttpUrl = Field(..., description="AWS S3 URL of the file to remove from Pinecone")
+    type: str = Field(..., description="Type of the document")
+    trainingStatus: str = Field(..., description="Training status of the document")
 
 
 class RAGQueryRequest(BaseModel):

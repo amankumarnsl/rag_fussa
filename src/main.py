@@ -2,6 +2,7 @@ import os
 import io
 import boto3
 import openai
+import requests
 from urllib.parse import urlparse, unquote
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,9 +98,55 @@ def get_embeddings(texts):
     return [item.embedding for item in response.data]
 
 
+async def update_document_status(uuid: str, status: str, failure_reason: str = None):
+    """Update document status in backend"""
+    try:
+        # Construct backend URL from environment variables
+        backend_base_url = os.getenv("BACKEND_BASE_URL", "192.168.68.72")
+        backend_port = os.getenv("BACKEND_PORT", "4504")
+        backend_endpoint = os.getenv("BACKEND_ENDPOINT_PATH", "/upload/internal/update-document-entry")
+        
+        backend_url = f"http://{backend_base_url}:{backend_port}{backend_endpoint}"
+        print(f"🔗 Backend URL: {backend_url}")
+        
+        payload = {
+            "search": {
+                "uuid": uuid
+            },
+            "update": {
+                "$set": {
+                    "trainingStatus": status
+                }
+            }
+        }
+        
+        # Add failure reason only if status is FAILED and reason is provided
+        if status == "FAILED" and failure_reason:
+            payload["update"]["$set"]["trainingFailedReason"] = failure_reason
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
+        response = requests.put(backend_url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"✅ Backend updated: {uuid} -> {status}")
+        else:
+            print(f"⚠️ Backend update failed: {response.status_code} - {response.text}")
+            
+    except Exception as e:
+        print(f"❌ Backend update error: {str(e)}")
+        # Don't raise exception - backend update failure shouldn't stop document processing
+
+
 @app.post("/ai-service/internal/process-document-data", response_model=TrainResponse)
 async def train(request: TrainRequest):
     try:
+        # Step 1: Update backend with PROCESSING status
+        await update_document_status(request.uuid, "PROCESSING")
+        
         # Parse S3 URL and extract filename
         parsed_url = urlparse(str(request.url))
         bucket_name = parsed_url.netloc.split('.')[0]
@@ -117,15 +164,14 @@ async def train(request: TrainRequest):
         file_type = get_file_type(file_extension)
         
         if file_type == 'unknown':
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Unsupported file type: {file_extension}"
-            )
+            error_msg = f"Unsupported file type: {file_extension}"
+            await update_document_status(request.uuid, "FAILED", error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
         
         # Get appropriate index for file type
         index = get_index_for_file_type(file_type)
         
-        # Step 1: Extract text and save to .txt file
+        # Step 2: Extract text and save to .txt file
         if file_type == 'pdf':
             text_filepath = process_pdf(file_content, filename)
         elif file_type == 'video':
@@ -133,7 +179,7 @@ async def train(request: TrainRequest):
         elif file_type == 'image':
             text_filepath = process_image(file_content, filename)  # Will return text path too
         
-        # Step 2: Common text processing pipeline (same for all file types)
+        # Step 3: Common text processing pipeline (same for all file types)
         processed_chunks = process_text_file_to_chunks(
             text_filepath=text_filepath,
             filename=filename,
@@ -141,7 +187,7 @@ async def train(request: TrainRequest):
             chunk_strategy="semantic"
         )
         
-        # Step 3: Generate embeddings for final chunks
+        # Step 4: Generate embeddings for final chunks
         chunk_texts = [chunk["content"] for chunk in processed_chunks]
         embeddings = get_embeddings(chunk_texts)
         
@@ -166,8 +212,11 @@ async def train(request: TrainRequest):
                 }
             })
         
-        # Upload to appropriate Pinecone index with filename as namespace
+        # Step 5: Upload to appropriate Pinecone index with filename as namespace
         index.upsert(vectors=vectors, namespace=filename)
+        
+        # Step 6: Update backend with COMPLETED status
+        await update_document_status(request.uuid, "COMPLETED")
         
         return TrainResponse(
             success=True,
@@ -181,15 +230,21 @@ async def train(request: TrainRequest):
             chunks_created=len(processed_chunks)
         )
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (already handled above)
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+        # Update backend with FAILED status for any other errors
+        error_msg = f"Training failed: {str(e)}"
+        await update_document_status(request.uuid, "FAILED", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
-@app.post("/untrain", response_model=UntrainResponse)
+@app.post("/unprocess-document-data", response_model=UntrainResponse)
 async def untrain(request: UntrainRequest):
     try:
         # Extract filename from S3 URL (URL decoding handled in extract_filename_from_s3_url)
-        filename = extract_filename_from_s3_url(request.s3_url)
+        filename = extract_filename_from_s3_url(request.url)
         file_extension = filename.split('.')[-1].lower()
         file_type = get_file_type(file_extension)
         
@@ -216,7 +271,7 @@ async def untrain(request: UntrainRequest):
                 return UntrainResponse(
                     success=True,
                     message=f"Successfully removed {file_type} file: {filename}",
-                    s3_url=str(request.s3_url),
+                    s3_url=str(request.url),
                     file_type=file_type,
                     chunks_removed=chunks_removed
                 )
@@ -224,7 +279,7 @@ async def untrain(request: UntrainRequest):
                 return UntrainResponse(
                     success=False,
                     message=f"File not found: {filename}",
-                    s3_url=str(request.s3_url),
+                    s3_url=str(request.url),
                     file_type=file_type,
                     chunks_removed=0
                 )
@@ -233,7 +288,7 @@ async def untrain(request: UntrainRequest):
             # Query and delete by metadata
             query_response = index.query(
                 vector=[0] * 1536,  # Dummy vector
-                filter={"s3_url": str(request.s3_url)},
+                filter={"s3_url": str(request.url)},
                 top_k=10000,
                 include_metadata=False,
                 namespace=filename
@@ -247,7 +302,7 @@ async def untrain(request: UntrainRequest):
                 return UntrainResponse(
                     success=True,
                     message=f"Successfully removed {file_type} file: {filename}",
-                    s3_url=str(request.s3_url),
+                    s3_url=str(request.url),
                     file_type=file_type,
                     chunks_removed=len(vector_ids)
                 )
@@ -255,7 +310,7 @@ async def untrain(request: UntrainRequest):
                 return UntrainResponse(
                     success=False,
                     message=f"File not found: {filename}",
-                    s3_url=str(request.s3_url),
+                    s3_url=str(request.url),
                     file_type=file_type,
                     chunks_removed=0
                 )

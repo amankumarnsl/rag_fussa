@@ -394,36 +394,131 @@ def save_conversation_locally(chat_id: str, query: str, answer: str):
     print(f"💾 Saved conversation for chat {chat_id} (total: {len(user_conversations[chat_id])} messages)")
 
 
-async def classify_query_type(chat_id: str, query: str) -> str:
-    """Classify if query is general conversation or knowledge question using GPT-4o-mini"""
+async def rephrase_followup_query(chat_id: str, query: str) -> str:
+    """Rephrase follow-up queries using conversation context"""
     try:
         import openai
         
         # Get conversation history for context
         conversation_history = user_conversations.get(chat_id, [])
         
+        if not conversation_history:
+            return query  # No history, return original query
+        
+        # Quick check for obvious non-follow-ups
+        query_lower = query.lower().strip()
+        if query_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'thanks', 'thank you', 'bye', 'goodbye']:
+            return query  # Greetings, no rephrasing needed
+        
+        # Check if query is clearly standalone (longer than 10 words, contains specific topics)
+        if len(query.split()) > 10 and any(word in query_lower for word in ['maharashtra', 'delhi', 'mumbai', 'friend', 'girlfriend', 'boyfriend', 'school', 'college', 'work', 'job']):
+            return query  # Standalone questions, no rephrasing needed
+        
         # Build conversation context
+        context_parts = []
+        for msg in conversation_history[-3:]:  # Last 3 exchanges
+            context_parts.append(f"User: {msg['query']}")
+            context_parts.append(f"Assistant: {msg['answer'][:200]}...")
+        context = "\n".join(context_parts)
+        
+        rephrase_prompt = f"""You are a query rephraser. Analyze if the current query is a follow-up to previous conversation and rephrase it with full context.
+
+CONVERSATION HISTORY:
+{context}
+
+CURRENT USER QUERY: {query}
+
+REPHRASING RULES:
+- ONLY rephrase if the query is clearly a follow-up to the previous conversation
+- Follow-up indicators: "why not", "why", "how", "what about", "tell me more", "explain that", "so you're saying", "is it okay", "right?"
+- If the query is standalone, personal, or about a different topic, return it as-is
+- If the query is a greeting or personal statement, return it as-is
+
+EXAMPLES:
+- "why not" + context about constitution → "why not can i kill someone according to constitution"
+- "tell me more" + context about rights → "tell me more about constitutional rights to life"
+- "explain that" + context about Article 21 → "explain Article 21 of the constitution"
+- "hello" → "hello" (no change needed)
+- "i purposed her, is it okay" → "i purposed her, is it okay" (personal question, no change)
+- "tell me about maharashtra" → "tell me about maharashtra" (standalone question, no change)
+- "what's my name" → "what's my name" (personal question, no change)
+
+IMPORTANT: Only expand if it's clearly a follow-up to the previous knowledge-based conversation. Don't force connections.
+
+Return ONLY the rephrased query, nothing else."""
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a query rephraser. Return only the rephrased query."},
+                {"role": "user", "content": rephrase_prompt}
+            ],
+            max_tokens=100,
+            temperature=0.1
+        )
+        
+        rephrased_query = response.choices[0].message.content.strip()
+        print(f"🔄 Query rephrased: '{query}' → '{rephrased_query}'")
+        print(f"📝 Rephrased query: {rephrased_query}")
+        
+        return rephrased_query
+        
+    except Exception as e:
+        print(f"❌ Query rephrasing failed: {str(e)}, using original query")
+        return query
+
+
+async def classify_query_type(chat_id: str, query: str) -> str:
+    """Classify if query is general conversation or knowledge question using GPT-4o-mini with full conversation context"""
+    try:
+        import openai
+        
+        # Get conversation history for context
+        conversation_history = user_conversations.get(chat_id, [])
+        
+        # Build full conversation context
         context = ""
         if conversation_history:
             recent_messages = conversation_history[-3:]  # Last 3 exchanges for context
             context_parts = []
             for msg in recent_messages:
                 context_parts.append(f"User: {msg['query']}")
-                context_parts.append(f"Assistant: {msg['answer'][:100]}...")  # Truncate for brevity
+                context_parts.append(f"Assistant: {msg['answer'][:150]}...")  # Truncate for brevity
             context = "\n".join(context_parts)
         
         classification_prompt = f"""You are a query classifier. Analyze the user's query and determine if it requires knowledge base search or is general conversation.
 
-CONVERSATION HISTORY:
+FULL CONVERSATION HISTORY:
 {context if context else "No previous conversation"}
 
 CURRENT USER QUERY: {query}
 
 CLASSIFICATION RULES:
-- GENERAL_CONVERSATION: Greetings (hello, hi), pleasantries (how are you, thank you), personal statements (my name is), follow-ups that refer to previous conversation context (tell me more, explain that, what about it), confirmations (yes, no, okay), goodbyes
-- KNOWLEDGE_QUESTION: Factual questions (what is, who is, explain, how does), requests for specific information, questions about topics that would require external knowledge
+- GENERAL_CONVERSATION: 
+  * Greetings (hello, hi, hey, good morning, thanks, how are you, nice to meet you)
+  * Personal statements (my name is, I am, I live in)
+  * Conversation about our chat (what's my name, what did I say, what did you tell me)
+  * Follow-ups to general conversation (tell me more about yourself, what else can you do)
+  * Confirmations (yes, no, okay, sure)
+  * Goodbyes (bye, see you later)
 
-IMPORTANT: If the query is a follow-up like "tell me more" or "explain that", check if it refers to something from the conversation history. If yes, classify as GENERAL_CONVERSATION.
+- KNOWLEDGE_QUESTION:
+  * Factual questions (what is, who is, explain, how does, when, where, why)
+  * Questions about specific topics that require external knowledge
+  * Follow-ups to knowledge questions (why not, tell me more about X, explain that concept)
+  * Questions that could be answered from uploaded documents/videos
+
+IMPORTANT CONTEXT ANALYSIS:
+- If the query is a follow-up like "why not", "tell me more", "explain that" - check if the previous conversation was about a knowledge topic
+- If previous conversation was about constitution, rights, laws, facts → classify as KNOWLEDGE_QUESTION
+- If previous conversation was general chat → classify as GENERAL_CONVERSATION
+- If no clear context, classify based on the query itself
+
+Examples:
+- "why not" after discussing constitution → KNOWLEDGE_QUESTION
+- "why not" after saying hello → GENERAL_CONVERSATION  
+- "tell me more" after discussing rights → KNOWLEDGE_QUESTION
+- "tell me more" after general chat → GENERAL_CONVERSATION
 
 Respond with ONLY one word: GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"""
 
@@ -530,8 +625,12 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # TODO: Process documents and add to context
             # For now, just process the message normally
         
-        # Step 1: Retrieve relevant content using fetch_rag_internal
-        rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K)
+        # Step 1: Rephrase query using conversation context
+        rephrased_query = await rephrase_followup_query(request.conversationId, request.question)
+        print(f"🔄 Using rephrased query: '{rephrased_query}'")
+        
+        # Step 2: Retrieve relevant content using rephrased query
+        rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K)
         
         if not rag_result["success"]:
             raise HTTPException(status_code=500, detail=f"Content retrieval failed: {rag_result['error']}")
@@ -541,7 +640,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         
         print(f"📚 Retrieved {total_retrieved} relevant chunks for conversation {request.conversationId}")
         
-        # Step 2: Classify query type using GPT-4o-mini
+        # Step 3: Classify query type using GPT-4o-mini with full conversation context
         query_type = await classify_query_type(request.conversationId, request.question)
         
         if query_type == "GENERAL_CONVERSATION":
@@ -559,14 +658,14 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 total_retrieved=0
             )
         else:
-            # Handle knowledge question with RAG
+            # Handle knowledge question with RAG using rephrased query
             print(f"🔍 Knowledge question detected for conversation {request.conversationId}")
-            ai_answer = await generate_conversational_ai_answer(request.conversationId, request.question, retrieved_content)
+            ai_answer = await generate_conversational_ai_answer(request.conversationId, rephrased_query, retrieved_content)
         
-        # Step 3: Save conversation locally for backup
+        # Step 4: Save conversation locally for backup
         save_conversation_locally(request.conversationId, request.question, ai_answer)
         
-        # Step 4: Return structured response
+        # Step 5: Return structured response
         return AskQueryRAGResponse(
             success=True,
             message="AI answer generated successfully",

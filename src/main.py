@@ -442,21 +442,22 @@ async def generate_conversation_title(first_message: str) -> str:
 USER'S FIRST MESSAGE: {first_message}
 
 INSTRUCTIONS:
-- If it's a greeting (hi, hello, hey), create a title like "General Chat" or "New Conversation"
+- If it's a greeting (hi, hello, hey), create a title like General Chat or New Conversation
 - If it's a specific question, create a descriptive title
 - If it's a help request, create a relevant title
 - Always return a meaningful title, never empty or generic
 - Keep it under 50 characters
 - Make it clear and specific
+- Do NOT include quotes around the title
 
 Examples:
-- "Hi" → "General Chat"
-- "Hello" → "New Conversation" 
-- "What is the constitution?" → "Constitution Discussion"
-- "Can you help me?" → "Help Request"
-- "Tell me about AI" → "AI Discussion"
+- "Hi" → General Chat
+- "Hello" → New Conversation 
+- "What is the constitution?" → Constitution Discussion
+- "Can you help me?" → Help Request
+- "Tell me about AI" → AI Discussion
 
-Return ONLY the title, nothing else."""
+Return ONLY the title without quotes, nothing else."""
 
         response = openai.chat.completions.create(
             model="gpt-4o-mini",

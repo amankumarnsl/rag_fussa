@@ -1,0 +1,135 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+docs/
+*.md
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.*
+config/secrets.py
+
+# Test files
+tests/
+test_*
+*_test.py
+pytest.ini
+.tox/
+.coverage
+.pytest_cache/
+
+# Data directories (large files)
+data_extraction_visualize/
+data_to_upload_to_S3/
+processed_data/
+raw_data/
+temp_uploads/
+uploads/
+s3_downloads/
+
+# Model files
+models/
+embeddings_cache/
+*.pkl
+*.pickle
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
+
+# Monitoring
+prometheus_data/
+grafana_data/
+
+# Node.js (if any frontend tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Local development
+local_config.py
+dev_settings.py
+debug.py
+
+# Performance profiling
+*.prof
+*.profile
+
+# Memory dumps
+*.dmp
+*.core

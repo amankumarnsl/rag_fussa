@@ -1,11 +1,31 @@
 # Copy this to .env and fill in your values
 
+# API Keys
 OPENAI_API_KEY=your_openai_api_key_here
 PINECONE_API_KEY=your_pinecone_api_key_here
 PINECONE_ENVIRONMENT=your_pinecone_environment_here
-PINECONE_PDF_INDEX=rag-pdfs
-PINECONE_VIDEO_INDEX=rag-videos
-PINECONE_IMAGE_INDEX=rag-images
 AWS_ACCESS_KEY_ID=your_aws_access_key_id_here
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key_here
 AWS_REGION=us-east-1
+ASSEMBLYAI_API_KEY=your_assemblyai_api_key_here
+
+# Pinecone Configuration
+PINECONE_PDF_INDEX=rag-pdfs
+PINECONE_VIDEO_INDEX=rag-videos
+PINECONE_IMAGE_INDEX=rag-images
+
+# Backend Configuration
+BACKEND_BASE_URL=192.168.68.72
+BACKEND_PORT=4504
+BACKEND_ENDPOINT_PATH=/upload/internal/update-document-entry
+
+# Logging Configuration
+LOG_LEVEL=INFO
+LOG_FILE=logs/rag_fussa.log
+ENVIRONMENT=development
+
+# CORS Configuration (comma-separated)
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
+
+# File Processing
+TEMP_UPLOAD_DIR=./temp_uploads

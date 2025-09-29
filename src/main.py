@@ -610,6 +610,14 @@ async def generate_general_conversation_answer(chat_id: str, query: str) -> str:
 
 You are handling general conversation. Decide between three behaviors and output ONLY the final message text (no labels):
 
+LANGUAGE REQUIREMENT:
+- IMPORTANT: Respond in the SAME LANGUAGE as the user's question
+- If the user asked in Hindi, respond in Hindi
+- If the user asked in Hinglish, respond in Hinglish
+- If the user asked in English, respond in English
+- Maintain the same language style and tone throughout the conversation
+- Handle mixed languages naturally (code-switching)
+
 1) GREETING_REPLY
 - Trigger if the message is a greeting/pleasantry/small talk (hello, hi, hey, good morning, thanks, how are you, nice to meet you, what's up, good night) or a very short friendly check-in.
 - Respond warmly and briefly, 1-2 sentences max.
@@ -784,6 +792,14 @@ CONTENT RULES:
 - Never use your general knowledge to supplement
 - If context partially addresses the question, answer what you can
 - Be honest about limitations when information is incomplete
+
+LANGUAGE REQUIREMENT:
+- IMPORTANT: Respond in the SAME LANGUAGE as the user's question
+- If the user asked in Hindi, respond in Hindi
+- If the user asked in Hinglish, respond in Hinglish
+- If the user asked in English, respond in English
+- Maintain the same language style and tone throughout the conversation
+- Handle mixed languages naturally (code-switching)
 
 CONTEXT INFORMATION:
 {context}

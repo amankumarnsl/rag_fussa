@@ -67,3 +67,4 @@ class AskQueryRAGResponse(BaseModel):
     answer: str
     retrieved_content: Optional[List[Dict[str, Any]]] = None
     total_retrieved: Optional[int] = None
+    conversationTitle: Optional[str] = None

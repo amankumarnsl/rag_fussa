@@ -432,12 +432,61 @@ async def fetch_rag(request: RAGQueryRequest):
         raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")
 
 
-def save_conversation_locally(chat_id: str, query: str, answer: str):
+async def generate_conversation_title(first_message: str) -> str:
+    """Generate conversation title using OpenAI - handles all cases"""
+    try:
+        import openai
+        
+        prompt = f"""Generate a short, descriptive title (max 50 characters) for this conversation based on the user's first message.
+
+USER'S FIRST MESSAGE: {first_message}
+
+INSTRUCTIONS:
+- If it's a greeting (hi, hello, hey), create a title like "General Chat" or "New Conversation"
+- If it's a specific question, create a descriptive title
+- If it's a help request, create a relevant title
+- Always return a meaningful title, never empty or generic
+- Keep it under 50 characters
+- Make it clear and specific
+
+Examples:
+- "Hi" → "General Chat"
+- "Hello" → "New Conversation" 
+- "What is the constitution?" → "Constitution Discussion"
+- "Can you help me?" → "Help Request"
+- "Tell me about AI" → "AI Discussion"
+
+Return ONLY the title, nothing else."""
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a conversation title generator. Return only the title."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=20,
+            temperature=0.3
+        )
+        
+        title = response.choices[0].message.content.strip()
+        print(f"📝 Generated conversation title: '{title}'")
+        return title if title else "New Conversation"
+        
+    except Exception as e:
+        print(f"❌ Title generation failed: {str(e)}")
+        return "New Conversation"
+
+
+def save_conversation_locally(chat_id: str, query: str, answer: str, title: str = None):
     """Save conversation to local storage for backup purposes"""
     import datetime
     
     if chat_id not in user_conversations:
-        user_conversations[chat_id] = []
+        user_conversations[chat_id] = {
+            "title": title,
+            "created_at": datetime.datetime.now().isoformat(),
+            "messages": []
+        }
     
     conversation_entry = {
         "timestamp": datetime.datetime.now().isoformat(),
@@ -445,8 +494,8 @@ def save_conversation_locally(chat_id: str, query: str, answer: str):
         "answer": answer
     }
     
-    user_conversations[chat_id].append(conversation_entry)
-    print(f"💾 Saved conversation for chat {chat_id} (total: {len(user_conversations[chat_id])} messages)")
+    user_conversations[chat_id]["messages"].append(conversation_entry)
+    print(f"💾 Saved conversation for chat {chat_id} (total: {len(user_conversations[chat_id]['messages'])} messages)")
 
 
 async def rephrase_followup_query(chat_id: str, query: str) -> str:
@@ -455,7 +504,8 @@ async def rephrase_followup_query(chat_id: str, query: str) -> str:
         import openai
         
         # Get conversation history for context
-        conversation_history = user_conversations.get(chat_id, [])
+        conversation_data = user_conversations.get(chat_id, {})
+        conversation_history = conversation_data.get("messages", []) if isinstance(conversation_data, dict) else conversation_data
         
         if not conversation_history:
             return query  # No history, return original query
@@ -529,7 +579,8 @@ async def classify_query_type(chat_id: str, query: str) -> str:
         import openai
         
         # Get conversation history for context
-        conversation_history = user_conversations.get(chat_id, [])
+        conversation_data = user_conversations.get(chat_id, {})
+        conversation_history = conversation_data.get("messages", []) if isinstance(conversation_data, dict) else conversation_data
         
         # Build full conversation context
         context = ""
@@ -682,6 +733,14 @@ async def ask_query_rag(request: AskQueryRAGRequest):
     try:
         print(f"🤖 Processing AI query for conversation {request.conversationId}: {request.question}")
         
+        # Check if this is the first message in the conversation
+        is_first_message = request.conversationId not in user_conversations
+        conversation_title = None
+        
+        if is_first_message:
+            print(f"🆕 First message detected for conversation {request.conversationId}")
+            conversation_title = await generate_conversation_title(request.question)
+        
         # Handle DOCUMENT type messages (placeholder for now)
         if request.type == "DOCUMENT":
             print(f"📄 Document type message received with {len(request.documents) if request.documents else 0} documents")
@@ -711,6 +770,9 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             print(f"💬 General conversation detected for conversation {request.conversationId}")
             ai_answer = await generate_general_conversation_answer(request.conversationId, request.question)
             
+            # Save conversation with title for first message
+            save_conversation_locally(request.conversationId, request.question, ai_answer, conversation_title)
+            
             # Return response without retrieved content for general chat
             return AskQueryRAGResponse(
                 success=True,
@@ -718,7 +780,8 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 conversationId=request.conversationId,
                 answer=ai_answer,
                 retrieved_content=[],
-                total_retrieved=0
+                total_retrieved=0,
+                conversationTitle=conversation_title
             )
         else:
             # Handle knowledge question with RAG using rephrased query
@@ -726,7 +789,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             ai_answer = await generate_conversational_ai_answer(request.conversationId, rephrased_query, retrieved_content)
         
         # Step 4: Save conversation locally for backup
-        save_conversation_locally(request.conversationId, request.question, ai_answer)
+        save_conversation_locally(request.conversationId, request.question, ai_answer, conversation_title)
         
         # Step 5: Return structured response
         return AskQueryRAGResponse(
@@ -735,7 +798,8 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             conversationId=request.conversationId,
             answer=ai_answer,
             retrieved_content=retrieved_content,
-            total_retrieved=total_retrieved
+            total_retrieved=total_retrieved,
+            conversationTitle=conversation_title
         )
         
     except Exception as e:
@@ -746,7 +810,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             
             # Save failed attempt locally
             error_answer = "Sorry, I couldn't generate an answer due to a technical issue, but I found some relevant content below."
-            save_conversation_locally(request.conversationId, request.question, error_answer)
+            save_conversation_locally(request.conversationId, request.question, error_answer, conversation_title)
             
             return AskQueryRAGResponse(
                 success=False,
@@ -754,7 +818,8 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 conversationId=request.conversationId,
                 answer=error_answer,
                 retrieved_content=retrieved_content,
-                total_retrieved=len(retrieved_content)
+                total_retrieved=len(retrieved_content),
+                conversationTitle=conversation_title
             )
         except:
             raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")

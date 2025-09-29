@@ -180,25 +180,46 @@ def get_paragraph_embeddings(paragraphs: List[str]) -> List[List[float]]:
         return []
 
 
+def safe_cosine_similarity(a, b) -> float:
+    """Calculate cosine similarity with numerical stability."""
+    try:
+        import numpy as np
+        
+        # Normalize vectors to prevent overflow
+        a_norm = np.linalg.norm(a)
+        b_norm = np.linalg.norm(b)
+        
+        # Handle zero vectors
+        if a_norm == 0 or b_norm == 0:
+            return 0.0
+        
+        # Calculate cosine similarity safely
+        dot_product = np.dot(a, b)
+        similarity = dot_product / (a_norm * b_norm)
+        
+        # Clamp to valid range [-1, 1] to handle numerical errors
+        return np.clip(similarity, -1.0, 1.0)
+        
+    except Exception as e:
+        print(f"⚠️  Cosine similarity calculation error: {str(e)}")
+        return 0.0
+
+
 def find_paragraph_semantic_boundaries(embeddings: List[List[float]], paragraphs: List[str]) -> List[int]:
     """Find semantic boundaries by analyzing paragraph embedding similarities."""
     try:
         import numpy as np
-        from sklearn.metrics.pairwise import cosine_similarity
         
         if len(embeddings) < 2:
             return [0, len(paragraphs)]
         
-        # Convert to numpy array
-        embeddings_array = np.array(embeddings)
+        # Convert to numpy array and ensure proper dtype
+        embeddings_array = np.array(embeddings, dtype=np.float32)
         
         # Calculate cosine similarities between consecutive paragraphs
         similarities = []
         for i in range(len(embeddings) - 1):
-            sim = cosine_similarity(
-                embeddings_array[i].reshape(1, -1),
-                embeddings_array[i + 1].reshape(1, -1)
-            )[0][0]
+            sim = safe_cosine_similarity(embeddings_array[i], embeddings_array[i + 1])
             similarities.append(sim)
         
         print(f"   📊 Similarity range: {min(similarities):.3f} - {max(similarities):.3f}")

@@ -27,6 +27,9 @@ from .utils.error_handling import (
     handle_openai_error, handle_pinecone_error, handle_s3_error, handle_backend_error,
     safe_api_call, safe_async_api_call, create_fallback_response, openai_retry, pinecone_retry, s3_retry, backend_retry
 )
+from .celery_app import celery_app
+from .tasks.document_processing import process_document_task
+from .tasks.embedding_tasks import generate_single_embedding
 
 # Initialize logging
 setup_logging(
@@ -222,13 +225,13 @@ async def update_document_status(uuid: str, status: str, failure_reason: str = N
         # Don't raise exception - backend update failure shouldn't stop document processing
 
 
-@app.post("/ai-service/internal/process-document-data", response_model=TrainResponse)
+@app.post("/ai-service/internal/process-document-data")
 async def train(request: TrainRequest):
-    start_time = time.time()
+    """Start document processing asynchronously"""
     request_id = request_id_var.get() or "unknown"
     
     try:
-        logger.info("Starting document training", 
+        logger.info("Starting async document training", 
                    uuid=request.uuid, 
                    name=request.name, 
                    url=str(request.url),
@@ -238,156 +241,94 @@ async def train(request: TrainRequest):
         # Step 1: Update backend with PROCESSING status
         await update_document_status(request.uuid, "PROCESSING")
         
-        # Parse S3 URL and extract filename
-        parsed_url = urlparse(str(request.url))
-        bucket_name = parsed_url.netloc.split('.')[0]
-        object_key = parsed_url.path.lstrip('/')
-        # URL decode the object key to handle special characters (Arabic, spaces, etc.)
-        object_key = unquote(object_key)
-        filename = extract_filename_from_s3_url(request.url)
-        
-        # Download file from S3 with error handling
-        try:
-            log_api_call("s3", f"s3://{bucket_name}/{object_key}", "GET")
-            response = safe_api_call("s3", s3_client.get_object, Bucket=bucket_name, Key=object_key)
-            file_content = response['Body'].read()
-            log_api_response("s3", f"s3://{bucket_name}/{object_key}", 200, 0)  # S3 doesn't return status in response
-            logger.info("File downloaded from S3", bucket=bucket_name, key=object_key, size_bytes=len(file_content))
-        except Exception as s3_error:
-            error = handle_s3_error(s3_error)
-            error_msg = f"Failed to download file from S3: {error.message}"
-            await update_document_status(request.uuid, "FAILED", error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        # Determine file type and process
-        file_extension = object_key.split('.')[-1].lower()
-        file_type = get_file_type(file_extension)
-        
-        if file_type == 'unknown':
-            error_msg = f"Unsupported file type: {file_extension}"
-            await update_document_status(request.uuid, "FAILED", error_msg)
-            raise HTTPException(status_code=400, detail=error_msg)
-        
-        # Get appropriate index for file type
-        index = get_index_for_file_type(file_type)
-        
-        # Step 2: Extract text and save to .txt file
-        log_processing_step("text_extraction", file_type, filename)
-        try:
-            if file_type == 'pdf':
-                text_filepath = process_pdf(file_content, filename)
-            elif file_type == 'video':
-                text_filepath = process_video(file_content, filename)
-            elif file_type == 'image':
-                text_filepath = process_image(file_content, filename)  # Will return text path too
-            
-            logger.info("Text extraction completed", file_type=file_type, filename=filename, text_filepath=text_filepath)
-        except Exception as processing_error:
-            error_msg = f"Failed to process {file_type} file: {str(processing_error)}"
-            log_error(processing_error, {"file_type": file_type, "filename": filename, "uuid": request.uuid})
-            await update_document_status(request.uuid, "FAILED", error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        # Step 3: Common text processing pipeline (same for all file types)
-        processed_chunks = process_text_file_to_chunks(
-            text_filepath=text_filepath,
-            filename=filename,
-            file_type=file_type,
-            chunk_strategy="semantic"
-        )
-        
-        # Step 4: Generate embeddings for final chunks
-        log_processing_step("embedding_generation", file_type, filename, chunk_count=len(processed_chunks))
-        try:
-            chunk_texts = [chunk["content"] for chunk in processed_chunks]
-            embeddings = get_embeddings(chunk_texts)
-            logger.info("Embeddings generated", chunk_count=len(chunk_texts), embedding_dimension=len(embeddings[0]) if embeddings else 0)
-        except Exception as embedding_error:
-            error = handle_openai_error(embedding_error)
-            error_msg = f"Failed to generate embeddings: {error.message}"
-            log_error(embedding_error, {"file_type": file_type, "filename": filename, "chunk_count": len(processed_chunks)})
-            await update_document_status(request.uuid, "FAILED", error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        # Prepare vectors for Pinecone with namespace
-        vectors = []
-        for i, (chunk, embedding) in enumerate(zip(processed_chunks, embeddings)):
-            vector_id = f"{filename}_{i}"
-            vectors.append({
-                "id": vector_id,
-                "values": embedding,
-                "metadata": {
-                    "name": request.name,
-                    "uuid": request.uuid,
-                    "url": str(request.url),
-                    "type": request.type,
-                    "trainingStatus": request.trainingStatus,
-                    "filename": filename,
-                    "chunk_index": i,
-                    "content": chunk["content"],
-                    "file_type": file_type,
-                    **chunk["metadata"]  # Include additional metadata from processors
-                }
-            })
-        
-        # Step 5: Upload to appropriate Pinecone index with filename as namespace
-        log_processing_step("pinecone_upload", file_type, filename, vector_count=len(vectors))
-        try:
-            safe_api_call("pinecone", index.upsert, vectors=vectors, namespace=filename)
-            logger.info("Vectors uploaded to Pinecone", namespace=filename, vector_count=len(vectors))
-        except Exception as pinecone_error:
-            error = handle_pinecone_error(pinecone_error)
-            error_msg = f"Failed to upload vectors to Pinecone: {error.message}"
-            log_error(pinecone_error, {"file_type": file_type, "filename": filename, "vector_count": len(vectors)})
-            await update_document_status(request.uuid, "FAILED", error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        # Step 6: Update backend with COMPLETED status
-        await update_document_status(request.uuid, "COMPLETED")
-        
-        # Log performance metrics
-        duration_ms = (time.time() - start_time) * 1000
-        log_performance_metric("document_training_duration", duration_ms, "ms", 
-                              file_type=file_type, chunk_count=len(processed_chunks), file_size_bytes=len(file_content))
-        
-        logger.info("Document training completed successfully", 
-                   uuid=request.uuid, 
-                   filename=filename, 
-                   file_type=file_type,
-                   chunks_created=len(processed_chunks),
-                   duration_ms=duration_ms)
-        
-        return TrainResponse(
-            success=True,
-            message=f"Successfully trained {file_type} file: {filename}",
-            name=request.name,
-            uuid=request.uuid,
-            url=str(request.url),
-            type=request.type,
-            trainingStatus="completed",
-            file_type=file_type,
-            chunks_created=len(processed_chunks)
-        )
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions (already handled above)
-        raise
-    except Exception as e:
-        # Update backend with FAILED status for any other errors
-        duration_ms = (time.time() - start_time) * 1000
-        error_msg = f"Training failed: {str(e)}"
-        
-        log_error(e, {
-            "operation": "document_training",
+        # Step 2: Start async Celery task
+        request_data = {
+            "name": request.name,
             "uuid": request.uuid,
-            "filename": filename if 'filename' in locals() else "unknown",
-            "file_type": file_type if 'file_type' in locals() else "unknown",
-            "duration_ms": duration_ms,
+            "url": str(request.url),
+            "type": request.type,
+            "trainingStatus": request.trainingStatus
+        }
+        
+        # Submit task to Celery
+        task = process_document_task.delay(request_data)
+        
+        logger.info("Document processing task submitted", 
+                   uuid=request.uuid,
+                   task_id=task.id,
+                   request_id=request_id)
+        
+        # Return immediate response with task ID
+        return {
+            "success": True,
+            "message": "Document processing started",
+            "task_id": task.id,
+            "uuid": request.uuid,
+            "status": "PROCESSING",
+            "check_status_url": f"/ai-service/internal/task-status/{task.id}"
+        }
+        
+    except Exception as e:
+        log_error(e, {
+            "operation": "start_document_training",
+            "uuid": request.uuid,
             "request_id": request_id
         })
         
-        await update_document_status(request.uuid, "FAILED", error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
+        # Update backend with FAILED status
+        await update_document_status(request.uuid, "FAILED", str(e))
+        
+        raise HTTPException(status_code=500, detail=f"Failed to start document processing: {str(e)}")
+
+@app.get("/ai-service/internal/task-status/{task_id}")
+async def get_task_status(task_id: str):
+    """Get the status of a processing task"""
+    try:
+        task = celery_app.AsyncResult(task_id)
+        
+        if task.state == "PENDING":
+            response = {
+                "task_id": task_id,
+                "status": "PENDING",
+                "progress": 0,
+                "message": "Task is waiting to be processed"
+            }
+        elif task.state == "PROGRESS":
+            response = {
+                "task_id": task_id,
+                "status": "PROGRESS",
+                "progress": task.info.get("progress", 0),
+                "step": task.info.get("step", "processing"),
+                "message": task.info.get("message", "Processing...")
+            }
+        elif task.state == "SUCCESS":
+            response = {
+                "task_id": task_id,
+                "status": "SUCCESS",
+                "progress": 100,
+                "result": task.result,
+                "message": "Task completed successfully"
+            }
+        elif task.state == "FAILURE":
+            response = {
+                "task_id": task_id,
+                "status": "FAILURE",
+                "progress": 0,
+                "error": str(task.info),
+                "message": "Task failed"
+            }
+        else:
+            response = {
+                "task_id": task_id,
+                "status": task.state,
+                "message": f"Task state: {task.state}"
+            }
+        
+        return response
+        
+    except Exception as e:
+        log_error(e, {"operation": "get_task_status", "task_id": task_id})
+        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
 
 
 @app.post("/unprocess-document-data", response_model=UntrainResponse)
@@ -477,8 +418,8 @@ async def retrain():
 async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
     """Internal function to fetch RAG results (used by both fetch_rag and ask-query-rag)"""
     try:
-        # Generate query embedding
-        query_embedding = get_embeddings([query])[0]
+        # Generate query embedding using async task
+        query_embedding = generate_single_embedding.delay(query).get()
         
         all_results = []
         

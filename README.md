@@ -67,13 +67,39 @@ ENVIRONMENT=development
 
 ## 🏃‍♂️ Running the Application
 
-### Development
+### Prerequisites
+- Redis server running on port 6379
+- All API keys configured in `.env` file
+
+### Development (Easy Start)
 ```bash
+# Start Redis (if not already running)
+docker run -d -p 6379:6379 redis:7-alpine
+
+# Start everything with one command
+./start_dev.sh
+```
+
+### Development (Manual Start)
+```bash
+# Terminal 1: Start Celery worker
+python start_worker.py
+
+# Terminal 2: Start FastAPI server
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Production
+### Production with Docker
 ```bash
+docker-compose up -d
+```
+
+### Production (Manual)
+```bash
+# Start Celery worker
+python start_worker.py
+
+# Start FastAPI server
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
@@ -85,7 +111,8 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
 - `GET /health/ready` - Readiness check for load balancers
 
 ### Document Processing
-- `POST /ai-service/internal/process-document-data` - Process and index documents
+- `POST /ai-service/internal/process-document-data` - Start async document processing
+- `GET /ai-service/internal/task-status/{task_id}` - Check processing status
 - `POST /unprocess-document-data` - Remove documents from index
 
 ### Query & Chat
@@ -102,9 +129,16 @@ Once the server is running, visit:
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   FastAPI App   │────│  Document       │────│  Pinecone       │
-│                 │    │  Processors     │    │  Vector DB      │
+│   FastAPI App   │────│  Celery Worker  │────│  Redis Broker   │
+│                 │    │  (Async Tasks)  │    │  & Result Store │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         │                       │                       │
+         │              ┌─────────────────┐              │
+         │              │  Document       │              │
+         │              │  Processing     │              │
+         │              │  Pipeline       │              │
+         │              └─────────────────┘              │
          │                       │                       │
          │              ┌─────────────────┐              │
          └──────────────│  Smart Chunking │──────────────┘
@@ -117,6 +151,29 @@ Once the server is running, visit:
                         │   Chat)         │
                         └─────────────────┘
 ```
+
+## ⚡ Async Processing
+
+The system now uses **Celery + Redis** for asynchronous document processing:
+
+### Benefits
+- **Non-blocking API**: Document processing doesn't block the API
+- **Scalable**: Multiple workers can process documents in parallel
+- **Progress Tracking**: Real-time status updates and progress monitoring
+- **Resilient**: Failed tasks can be retried automatically
+- **Resource Efficient**: Better memory and CPU utilization
+
+### Processing Flow
+1. **API Request**: Client submits document for processing
+2. **Immediate Response**: API returns task ID immediately
+3. **Background Processing**: Celery worker processes document asynchronously
+4. **Progress Updates**: Client can check status using task ID
+5. **Completion**: Final result available when processing completes
+
+### Task Queues
+- **document_processing**: Heavy document processing tasks
+- **embeddings**: Embedding generation tasks
+- **default**: General purpose tasks
 
 ## 📊 Monitoring & Logging
 
@@ -133,6 +190,15 @@ Once the server is running, visit:
 ### Log Files
 - `logs/rag_fussa.log` - Application logs
 - `logs/rag_fussa_errors.log` - Error logs only
+
+### Task Monitoring
+```bash
+# Monitor active tasks
+python monitor_tasks.py
+
+# Check specific task status
+python monitor_tasks.py <task_id>
+```
 
 ## 🔧 Production Deployment
 

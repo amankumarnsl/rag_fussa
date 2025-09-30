@@ -29,3 +29,13 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 
 # File Processing
 TEMP_UPLOAD_DIR=./temp_uploads
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379/0
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+
+# Celery Configuration
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0

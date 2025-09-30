@@ -283,6 +283,108 @@ class DependencyChecker:
                 f"Backend API error: {str(e)}"
             )
     
+    async def check_redis(self) -> HealthCheckResult:
+        """Check Redis connectivity"""
+        try:
+            import redis
+            import os
+            
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            
+            start_time = time.time()
+            
+            # Create Redis client
+            r = redis.from_url(redis_url)
+            
+            # Test Redis connectivity
+            await asyncio.wait_for(
+                asyncio.to_thread(r.ping),
+                timeout=self.timeout
+            )
+            
+            # Get Redis info
+            info = await asyncio.wait_for(
+                asyncio.to_thread(r.info),
+                timeout=self.timeout
+            )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            return HealthCheckResult(
+                "redis",
+                HealthStatus.HEALTHY,
+                "Redis is accessible",
+                {
+                    "response_time_ms": round(duration_ms, 2),
+                    "redis_version": info.get("redis_version", "unknown"),
+                    "connected_clients": info.get("connected_clients", 0),
+                    "used_memory_human": info.get("used_memory_human", "unknown")
+                }
+            )
+            
+        except asyncio.TimeoutError:
+            return HealthCheckResult(
+                "redis",
+                HealthStatus.UNHEALTHY,
+                "Redis timeout"
+            )
+        except Exception as e:
+            return HealthCheckResult(
+                "redis",
+                HealthStatus.UNHEALTHY,
+                f"Redis error: {str(e)}"
+            )
+    
+    async def check_celery(self) -> HealthCheckResult:
+        """Check Celery worker connectivity"""
+        try:
+            from ..celery_app import celery_app
+            
+            start_time = time.time()
+            
+            # Check if workers are available
+            inspect = celery_app.control.inspect()
+            
+            # Get active workers
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(inspect.stats),
+                timeout=self.timeout
+            )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            if stats:
+                worker_count = len(stats)
+                return HealthCheckResult(
+                    "celery",
+                    HealthStatus.HEALTHY,
+                    f"Celery workers are active ({worker_count} workers)",
+                    {
+                        "response_time_ms": round(duration_ms, 2),
+                        "worker_count": worker_count,
+                        "workers": list(stats.keys())
+                    }
+                )
+            else:
+                return HealthCheckResult(
+                    "celery",
+                    HealthStatus.UNHEALTHY,
+                    "No Celery workers are active"
+                )
+                
+        except asyncio.TimeoutError:
+            return HealthCheckResult(
+                "celery",
+                HealthStatus.UNHEALTHY,
+                "Celery worker check timeout"
+            )
+        except Exception as e:
+            return HealthCheckResult(
+                "celery",
+                HealthStatus.UNHEALTHY,
+                f"Celery error: {str(e)}"
+            )
+    
     async def check_file_system(self) -> HealthCheckResult:
         """Check file system accessibility"""
         try:
@@ -344,13 +446,15 @@ async def check_all_dependencies() -> Dict[str, HealthCheckResult]:
         checker.check_pinecone(),
         checker.check_aws_s3(),
         checker.check_backend_api(),
+        checker.check_redis(),
+        checker.check_celery(),
         checker.check_file_system(),
         return_exceptions=True
     )
     
     # Handle exceptions
     dependency_results = {}
-    check_names = ["openai", "pinecone", "aws_s3", "backend_api", "file_system"]
+    check_names = ["openai", "pinecone", "aws_s3", "backend_api", "redis", "celery", "file_system"]
     
     for i, result in enumerate(results):
         service_name = check_names[i]

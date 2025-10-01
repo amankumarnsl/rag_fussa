@@ -2,6 +2,7 @@
 Smart chunking using LangChain 0.3 for semantic and hierarchical text splitting
 """
 import os
+import asyncio
 from typing import List, Dict, Any
 from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
@@ -9,6 +10,7 @@ from langchain_text_splitters import (
 )
 from langchain_openai import OpenAIEmbeddings
 from ..config.config import OPENAI_API_KEY
+from .cpu_config import run_cpu_task
 
 
 def save_extracted_text(content: str, filename: str, file_type: str) -> str:
@@ -646,9 +648,9 @@ def smart_chunk_text(text: str, filename: str, strategy: str = "semantic") -> Li
         return semantic_chunking(text, filename)
 
 
-def process_extracted_text(content: str, filename: str, file_type: str, chunking_strategy: str = "semantic") -> List[Dict[str, Any]]:
+def _process_extracted_text_cpu_intensive(content: str, filename: str, file_type: str, chunking_strategy: str = "semantic") -> List[Dict[str, Any]]:
     """
-    Complete pipeline: save extracted text → smart chunking.
+    CPU-intensive text processing function for multiprocessing.
     
     Args:
         content (str): Extracted text content
@@ -683,3 +685,19 @@ def process_extracted_text(content: str, filename: str, file_type: str, chunking
     except Exception as e:
         print(f"❌ Smart chunking pipeline failed: {str(e)}")
         return []
+
+
+async def process_extracted_text(content: str, filename: str, file_type: str, chunking_strategy: str = "semantic") -> List[Dict[str, Any]]:
+    """
+    Complete pipeline: save extracted text → smart chunking with multiprocessing.
+    
+    Args:
+        content (str): Extracted text content
+        filename (str): Original filename
+        file_type (str): File type (pdf, video, image)
+        chunking_strategy (str): Chunking strategy to use
+        
+    Returns:
+        list: List of smart chunks ready for Pinecone
+    """
+    return await run_cpu_task(_process_extracted_text_cpu_intensive, content, filename, file_type, chunking_strategy)

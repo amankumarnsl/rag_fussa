@@ -3,7 +3,10 @@ Video processing functionality
 """
 import os
 import tempfile
+import asyncio
+import subprocess
 from ..utils.smart_chunking import process_extracted_text
+from ..utils.cpu_config import run_cpu_task
 
 
 def extract_video_metadata(video_content, file_name):
@@ -66,9 +69,9 @@ def extract_video_frames(video_content, file_name, max_frames=10):
         raise Exception(f"Failed to extract video frames: {str(e)}")
 
 
-def extract_audio_from_video(video_content, file_name):
+def _extract_audio_cpu_intensive(video_content, file_name):
     """
-    Extract audio from video file using ffmpeg.
+    CPU-intensive audio extraction function for multiprocessing.
     
     Args:
         video_content (bytes): Video file content
@@ -149,6 +152,20 @@ def extract_audio_from_video(video_content, file_name):
                 os.unlink(temp_video_path)
         except:
             pass
+
+
+async def extract_audio_from_video(video_content, file_name):
+    """
+    Extract audio from video file using ffmpeg with multiprocessing.
+    
+    Args:
+        video_content (bytes): Video file content
+        file_name (str): Name of the file
+        
+    Returns:
+        tuple: (audio_file_path, audio_info) or (None, error_message)
+    """
+    return await run_cpu_task(_extract_audio_cpu_intensive, video_content, file_name)
 
 
 def transcribe_audio_with_assemblyai(audio_path, file_name):
@@ -311,7 +328,7 @@ def extract_video_audio_transcript(video_content, file_name):
         return f"[AUDIO PROCESSING ERROR] Failed to process audio from {file_name}: {str(e)}"
 
 
-def process_video(video_content, file_name, chunk_strategy="semantic"):
+async def process_video(video_content, file_name, chunk_strategy="semantic"):
     """
     Process video file: extract audio → transcribe → save to .txt → return path for common processing.
     

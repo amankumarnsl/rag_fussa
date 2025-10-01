@@ -3,12 +3,14 @@ PDF processing functionality
 """
 import io
 import fitz  # PyMuPDF
+import asyncio
 from ..utils.smart_chunking import process_extracted_text
+from ..utils.cpu_config import run_cpu_task
 
 
-def extract_pdf_text(pdf_content):
+def _extract_pdf_text_cpu_intensive(pdf_content):
     """
-    Extract text from PDF content using PyMuPDF.
+    CPU-intensive PDF text extraction function for multiprocessing.
     
     Args:
         pdf_content (bytes): PDF file content
@@ -37,7 +39,20 @@ def extract_pdf_text(pdf_content):
         raise Exception(f"Failed to extract text from PDF: {str(e)}")
 
 
-def process_pdf(pdf_content, file_name, chunk_strategy="semantic"):
+async def extract_pdf_text(pdf_content):
+    """
+    Extract text from PDF content using PyMuPDF with multiprocessing.
+    
+    Args:
+        pdf_content (bytes): PDF file content
+        
+    Returns:
+        str: Extracted text from PDF
+    """
+    return await run_cpu_task(_extract_pdf_text_cpu_intensive, pdf_content)
+
+
+async def process_pdf(pdf_content, file_name, chunk_strategy="semantic"):
     """
     Process PDF file: extract text → save to .txt → return path for common processing.
     
@@ -71,7 +86,7 @@ def process_pdf(pdf_content, file_name, chunk_strategy="semantic"):
         raise Exception(f"Failed to process PDF: {str(e)}")
 
 
-def get_pdf_info(pdf_content):
+async def get_pdf_info(pdf_content):
     """
     Get basic information about the PDF using PyMuPDF.
     

@@ -4,24 +4,28 @@ import boto3
 import openai
 import requests
 import time
+import asyncio
 from urllib.parse import urlparse, unquote
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import PyPDF2
+from typing import List, Dict
 
 from .config.config import *
 from .config.schemas import *
-from .processors.pdf_processor import process_pdf, get_pdf_info
-from .processors.video_processor import process_video, is_video_file
-from .processors.image_processor import process_image, is_image_file
+from .processors.pdf_processor import process_pdf, get_pdf_info, extract_pdf_text
+from .processors.video_processor import process_video, is_video_file, extract_video_audio_transcript
+from .processors.image_processor import process_image, is_image_file, extract_text_from_image
 from .utils.text_pipeline import process_text_file_to_chunks
+from .utils.smart_chunking import process_extracted_text
 from .utils.health_checks import check_all_dependencies, get_overall_health_status, HealthStatus
 from .utils.error_handling import (
     ServiceError, OpenAIServiceError, PineconeServiceError, S3ServiceError, BackendServiceError,
     handle_openai_error, handle_pinecone_error, handle_s3_error, handle_backend_error,
     safe_api_call, safe_async_api_call, create_fallback_response, openai_retry, pinecone_retry, s3_retry, backend_retry
 )
+from .utils.cpu_config import run_cpu_task, debug_print_cpu_info, get_cpu_info
 
 # Simple debug toggle - set to True for console prints, False for silence
 DEBUG_PRINT = os.getenv("DEBUG_PRINT", "false").lower() == "true"
@@ -61,6 +65,7 @@ def debug_print(message, **kwargs):
 # Startup message
 if DEBUG_PRINT:
     print("🚀 Starting RAG FUSSA API")
+    debug_print_cpu_info()
 
 # Mock logger to replace all logger calls with debug_print
 class MockLogger:
@@ -151,15 +156,15 @@ def extract_filename_from_s3_url(s3_url):
     return filename
 
 
-def get_file_type(file_extension):
+async def get_file_type(file_extension):
     """Determine file type from extension."""
     file_extension = file_extension.lower()
     
     if file_extension == 'pdf':
         return 'pdf'
-    elif is_video_file(file_extension):
+    elif await is_video_file(file_extension):
         return 'video'
-    elif is_image_file(file_extension):
+    elif await is_image_file(file_extension):
         return 'image'
     else:
         return 'unknown'
@@ -179,19 +184,21 @@ def get_index_for_file_type(file_type):
 
 
 
-def get_embeddings(texts):
+async def get_embeddings(texts):
     """Get embeddings from OpenAI using text-embedding-3-small with retry logic."""
     try:
         debug_print("OpenAI API call", service="openai", endpoint="embeddings", method="POST", model="text-embedding-3-small", text_count=len(texts))
         
         @openai_retry
-        def _get_embeddings():
-            return openai.embeddings.create(
-                input=texts,
-                model="text-embedding-3-small"
+        async def _get_embeddings():
+            return await asyncio.to_thread(
+                lambda: openai.embeddings.create(
+                    input=texts,
+                    model="text-embedding-3-small"
+                )
             )
         
-        response = _get_embeddings()
+        response = await _get_embeddings()
         embeddings = [item.embedding for item in response.data]
         
         debug_print("OpenAI API response", service="openai", endpoint="embeddings", status=200, model="text-embedding-3-small", embedding_count=len(embeddings))
@@ -201,6 +208,58 @@ def get_embeddings(texts):
         error = handle_openai_error(e)
         debug_print("Get embeddings error", operation="get_embeddings", error=str(e), text_count=len(texts))
         raise error
+
+
+async def download_document_from_s3(s3_url: str) -> bytes:
+    """Download document content from S3 URL"""
+    try:
+        debug_print("Downloading document from S3", s3_url=s3_url)
+        
+        # Download document content using requests with asyncio.to_thread
+        response = await asyncio.to_thread(requests.get, s3_url, timeout=300)  # 5 minute timeout
+        response.raise_for_status()
+        
+        debug_print("Document downloaded successfully", s3_url=s3_url, size_bytes=len(response.content))
+        return response.content
+        
+    except Exception as e:
+        debug_print("S3 download failed", s3_url=s3_url, error=str(e))
+        raise Exception(f"Failed to download document from S3: {str(e)}")
+
+
+async def store_chunks_in_pinecone(chunks: List[Dict], embeddings: List[List[float]], filename: str, file_type: str):
+    """Store chunks with embeddings in Pinecone"""
+    try:
+        debug_print("Storing chunks in Pinecone", filename=filename, file_type=file_type, chunk_count=len(chunks))
+        
+        # Get appropriate index for file type
+        index = get_index_for_file_type(file_type)
+        
+        # Prepare vectors for Pinecone
+        vectors = []
+        for i, chunk in enumerate(chunks):
+            vector_data = {
+                "id": f"{filename}_{i}",
+                "values": embeddings[i],
+                "metadata": {
+                    **chunk["metadata"],
+                    "filename": filename,
+                    "file_type": file_type,
+                    "chunk_index": i,
+                    "s3_url": chunk["metadata"].get("s3_url", ""),
+                    "content": chunk["content"][:1000]  # Store first 1000 chars for search
+                }
+            }
+            vectors.append(vector_data)
+        
+        # Store in Pinecone with namespace
+        await asyncio.to_thread(index.upsert, vectors=vectors, namespace=filename)
+        
+        debug_print("Chunks stored successfully in Pinecone", filename=filename, vector_count=len(vectors))
+        
+    except Exception as e:
+        debug_print("Pinecone storage failed", filename=filename, error=str(e))
+        raise Exception(f"Failed to store chunks in Pinecone: {str(e)}")
 
 
 async def update_document_status(uuid: str, status: str, failure_reason: str = None):
@@ -236,7 +295,9 @@ async def update_document_status(uuid: str, status: str, failure_reason: str = N
         
         # Use improved error handling with retry logic
         try:
-            response = safe_api_call("backend", requests.put, backend_url, json=payload, headers=headers, timeout=10)
+            response = await asyncio.to_thread(
+                safe_api_call, "backend", requests.put, backend_url, json=payload, headers=headers, timeout=10
+            )
             
             if response.status_code == 200:
                 logger.info("Backend status updated successfully", uuid=uuid, status=status)
@@ -279,18 +340,65 @@ async def train(request: TrainRequest):
             "trainingStatus": request.trainingStatus
         }
         
-        # Process document directly (synchronous)
-        logger.info("Processing document directly", 
-                   uuid=request.uuid,
-                   request_id=request_id)
+        # Step 3: Download document from S3
+        debug_print("Downloading document from S3", uuid=request.uuid, s3_url=str(request.url))
+        document_content = await download_document_from_s3(str(request.url))
         
-        # TODO: Implement direct document processing
-        # For now, just return success
+        # Step 4: Extract filename and determine file type
+        filename = extract_filename_from_s3_url(request.url)
+        file_extension = filename.split('.')[-1].lower()
+        file_type = await get_file_type(file_extension)
+        
+        debug_print("Document type detected", uuid=request.uuid, filename=filename, file_type=file_type)
+        
+        # Step 5: Process document based on type
+        text_content = ""
+        if file_type == "pdf":
+            debug_print("Processing PDF document", uuid=request.uuid, filename=filename)
+            text_content = await extract_pdf_text(document_content)
+        elif file_type == "video":
+            debug_print("Processing video document", uuid=request.uuid, filename=filename)
+            text_content = await asyncio.to_thread(extract_video_audio_transcript, document_content, filename)
+        elif file_type == "image":
+            debug_print("Processing image document", uuid=request.uuid, filename=filename)
+            text_content = await extract_text_from_image(document_content, filename)
+        else:
+            raise Exception(f"Unsupported file type: {file_type}")
+        
+        debug_print("Text extraction completed", uuid=request.uuid, text_length=len(text_content))
+        
+        # Step 6: Process text into chunks
+        debug_print("Processing text into chunks", uuid=request.uuid, filename=filename)
+        chunks = await process_extracted_text(text_content, filename, file_type, "semantic")
+        
+        if not chunks:
+            raise Exception("No chunks generated from document")
+        
+        debug_print("Chunks generated", uuid=request.uuid, chunk_count=len(chunks))
+        
+        # Step 7: Generate embeddings for chunks
+        debug_print("Generating embeddings", uuid=request.uuid, chunk_count=len(chunks))
+        chunk_texts = [chunk["content"] for chunk in chunks]
+        embeddings = await get_embeddings(chunk_texts)
+        
+        debug_print("Embeddings generated", uuid=request.uuid, embedding_count=len(embeddings))
+        
+        # Step 8: Store chunks in Pinecone
+        debug_print("Storing chunks in Pinecone", uuid=request.uuid, filename=filename)
+        await store_chunks_in_pinecone(chunks, embeddings, filename, file_type)
+        
+        # Step 9: Update backend with COMPLETED status
+        debug_print("Document processing completed", uuid=request.uuid, filename=filename, chunk_count=len(chunks))
+        await update_document_status(request.uuid, "COMPLETED")
+        
         return {
             "success": True,
-            "message": "Document processing completed",
+            "message": f"Document processing completed: {len(chunks)} chunks stored",
             "uuid": request.uuid,
-            "status": "COMPLETED"
+            "status": "COMPLETED",
+            "filename": filename,
+            "file_type": file_type,
+            "chunks_processed": len(chunks)
         }
         
     except Exception as e:
@@ -323,19 +431,24 @@ async def get_task_status(task_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
 
 
-@app.post("/unprocess-document-data", response_model=UntrainResponse)
+@app.post("/ai-service/internal/unprocess-document-data", response_model=UntrainResponse)
 async def untrain(request: UntrainRequest):
     try:
+        debug_print("Starting document removal", uuid=request.uuid, url=str(request.url))
+        
+        # Step 1: Update backend with PROCESSING status
+        await update_document_status(request.uuid, "PROCESSING")
+        
         # Extract filename from S3 URL (URL decoding handled in extract_filename_from_s3_url)
         filename = extract_filename_from_s3_url(request.url)
         file_extension = filename.split('.')[-1].lower()
-        file_type = get_file_type(file_extension)
+        file_type = await get_file_type(file_extension)
         
         if file_type == 'unknown':
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Unsupported file type: {file_extension}"
-            )
+            error_msg = f"Unsupported file type: {file_extension}"
+            debug_print("Unsupported file type", uuid=request.uuid, file_extension=file_extension)
+            await update_document_status(request.uuid, "FAILED", error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
         
         # Get appropriate index for file type
         index = get_index_for_file_type(file_type)
@@ -343,13 +456,18 @@ async def untrain(request: UntrainRequest):
         # Delete the entire namespace (all chunks for this file)
         try:
             # Get stats to check if namespace exists
-            stats = index.describe_index_stats()
+            stats = await asyncio.to_thread(index.describe_index_stats)
             namespaces = stats.get('namespaces', {})
             
             if filename in namespaces:
                 # Delete the namespace
-                index.delete(delete_all=True, namespace=filename)
+                await asyncio.to_thread(index.delete, delete_all=True, namespace=filename)
                 chunks_removed = namespaces[filename].get('vector_count', 0)
+                
+                debug_print("Document removal successful", uuid=request.uuid, filename=filename, chunks_removed=chunks_removed)
+                
+                # Update backend with COMPLETED status
+                await update_document_status(request.uuid, "COMPLETED")
                 
                 return UntrainResponse(
                     success=True,
@@ -359,6 +477,11 @@ async def untrain(request: UntrainRequest):
                     chunks_removed=chunks_removed
                 )
             else:
+                debug_print("File not found in Pinecone", uuid=request.uuid, filename=filename)
+                
+                # Update backend with COMPLETED status (file not found is still a successful operation)
+                await update_document_status(request.uuid, "COMPLETED")
+                
                 return UntrainResponse(
                     success=False,
                     message=f"File not found: {filename}",
@@ -369,7 +492,8 @@ async def untrain(request: UntrainRequest):
         except Exception as e:
             # If namespace deletion fails, try alternative approach
             # Query and delete by metadata
-            query_response = index.query(
+            query_response = await asyncio.to_thread(
+                index.query,
                 vector=[0] * 1536,  # Dummy vector
                 filter={"s3_url": str(request.url)},
                 top_k=10000,
@@ -380,7 +504,12 @@ async def untrain(request: UntrainRequest):
             vector_ids = [match.id for match in query_response.matches]
             
             if vector_ids:
-                index.delete(ids=vector_ids, namespace=filename)
+                await asyncio.to_thread(index.delete, ids=vector_ids, namespace=filename)
+                
+                debug_print("Document removal successful (fallback method)", uuid=request.uuid, filename=filename, chunks_removed=len(vector_ids))
+                
+                # Update backend with COMPLETED status
+                await update_document_status(request.uuid, "COMPLETED")
                 
                 return UntrainResponse(
                     success=True,
@@ -390,6 +519,11 @@ async def untrain(request: UntrainRequest):
                     chunks_removed=len(vector_ids)
                 )
             else:
+                debug_print("File not found in Pinecone (fallback method)", uuid=request.uuid, filename=filename)
+                
+                # Update backend with COMPLETED status (file not found is still a successful operation)
+                await update_document_status(request.uuid, "COMPLETED")
+                
                 return UntrainResponse(
                     success=False,
                     message=f"File not found: {filename}",
@@ -399,6 +533,11 @@ async def untrain(request: UntrainRequest):
                 )
         
     except Exception as e:
+        debug_print("Document removal failed", uuid=request.uuid, error=str(e))
+        
+        # Update backend with FAILED status
+        await update_document_status(request.uuid, "FAILED", str(e))
+        
         raise HTTPException(status_code=500, detail=f"Untrain failed: {str(e)}")
 
 
@@ -414,7 +553,7 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         
         # Generate query embedding directly
         logger.info("fetch_rag_internal: Generating query embedding")
-        query_embedding = get_embeddings(query)
+        query_embedding = await get_embeddings([query])
         logger.info("fetch_rag_internal: Query embedding generated")
         
         all_results = []
@@ -431,13 +570,14 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
             try:
                 logger.info("fetch_rag_internal: Searching index", file_type=file_type)
                 # Get all namespaces in this index
-                stats = index.describe_index_stats()
+                stats = await asyncio.to_thread(index.describe_index_stats)
                 namespaces = stats.get('namespaces', {})
                 logger.info("fetch_rag_internal: Got namespaces", file_type=file_type, namespace_count=len(namespaces))
                 
                 if not namespaces:
                     # If no namespaces, search without namespace
-                    search_response = index.query(
+                    search_response = await asyncio.to_thread(
+                        index.query,
                         vector=query_embedding,
                         top_k=top_k,
                         include_metadata=True
@@ -457,7 +597,8 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
                 else:
                     # Search each namespace separately
                     for namespace_name in namespaces.keys():
-                        search_response = index.query(
+                        search_response = await asyncio.to_thread(
+                            index.query,
                             vector=query_embedding,
                             top_k=top_k,
                             include_metadata=True,

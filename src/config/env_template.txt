@@ -28,3 +28,7 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 # File Processing
 TEMP_UPLOAD_DIR=./temp_uploads
 
+# CPU Multiprocessing Configuration
+# CPU_CORES=4  # Override default (50% of total cores)
+# MAX_CONCURRENT_CPU_TASKS=4  # Max concurrent CPU tasks
+

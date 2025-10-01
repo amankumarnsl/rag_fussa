@@ -2,7 +2,9 @@
 Image processing functionality
 """
 import base64
+import asyncio
 from ..utils.chunking import smart_chunk
+from ..utils.cpu_config import run_cpu_task
 
 
 def extract_image_metadata(image_content, file_name):
@@ -85,9 +87,9 @@ def analyze_image_content(image_content, file_name):
         raise Exception(f"Failed to analyze image content: {str(e)}")
 
 
-def extract_text_from_image(image_content, file_name):
+def _extract_text_from_image_cpu_intensive(image_content, file_name):
     """
-    Extract text from image using OCR.
+    CPU-intensive OCR text extraction function for multiprocessing.
     
     Args:
         image_content (bytes): Image file content
@@ -122,7 +124,21 @@ def extract_text_from_image(image_content, file_name):
         raise Exception(f"Failed to extract text from image: {str(e)}")
 
 
-def process_image(image_content, file_name, chunk_strategy="words"):
+async def extract_text_from_image(image_content, file_name):
+    """
+    Extract text from image using OCR with multiprocessing.
+    
+    Args:
+        image_content (bytes): Image file content
+        file_name (str): Name of the file
+        
+    Returns:
+        str: Extracted text from image
+    """
+    return await run_cpu_task(_extract_text_from_image_cpu_intensive, image_content, file_name)
+
+
+async def process_image(image_content, file_name, chunk_strategy="words"):
     """
     Process image file and return chunks with metadata.
     

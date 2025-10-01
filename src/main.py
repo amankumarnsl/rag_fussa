@@ -466,8 +466,8 @@ async def untrain(request: UntrainRequest):
                 
                 debug_print("Document removal successful", uuid=request.uuid, filename=filename, chunks_removed=chunks_removed)
                 
-                # Update backend with COMPLETED status
-                await update_document_status(request.uuid, "COMPLETED")
+                # Update backend with PENDING status
+                await update_document_status(request.uuid, "PENDING")
                 
                 return UntrainResponse(
                     success=True,
@@ -508,8 +508,8 @@ async def untrain(request: UntrainRequest):
                 
                 debug_print("Document removal successful (fallback method)", uuid=request.uuid, filename=filename, chunks_removed=len(vector_ids))
                 
-                # Update backend with COMPLETED status
-                await update_document_status(request.uuid, "COMPLETED")
+                # Update backend with PENDING status
+                await update_document_status(request.uuid, "PENDING")
                 
                 return UntrainResponse(
                     success=True,

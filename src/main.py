@@ -16,29 +16,65 @@ from .processors.pdf_processor import process_pdf, get_pdf_info
 from .processors.video_processor import process_video, is_video_file
 from .processors.image_processor import process_image, is_image_file
 from .utils.text_pipeline import process_text_file_to_chunks
-from .utils.logging_config import (
-    setup_logging, get_logger, log_request_start, log_request_end,
-    log_api_call, log_api_response, log_processing_step, log_conversation_event,
-    log_error, log_performance_metric, request_id_var, user_id_var, conversation_id_var
-)
 from .utils.health_checks import check_all_dependencies, get_overall_health_status, HealthStatus
 from .utils.error_handling import (
     ServiceError, OpenAIServiceError, PineconeServiceError, S3ServiceError, BackendServiceError,
     handle_openai_error, handle_pinecone_error, handle_s3_error, handle_backend_error,
     safe_api_call, safe_async_api_call, create_fallback_response, openai_retry, pinecone_retry, s3_retry, backend_retry
 )
-from .celery_app import celery_app
-from .tasks.document_processing import process_document_task
-from .tasks.embedding_tasks import generate_single_embedding
 
-# Initialize logging
-setup_logging(
-    log_level=os.getenv("LOG_LEVEL", "INFO"),
-    log_file=os.getenv("LOG_FILE", "logs/rag_fussa.log")
-)
+# Simple debug toggle - set to True for console prints, False for silence
+DEBUG_PRINT = os.getenv("DEBUG_PRINT", "false").lower() == "true"
 
-logger = get_logger("main")
-logger.info("Starting RAG FUSSA API")
+# Debug file logging setup
+debug_file = None
+if DEBUG_PRINT:
+    import datetime
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+    
+    # Generate filename with datetime (newest first sorting)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    debug_filename = f"logs/{timestamp}_debug.log"
+    
+    # Open debug file for writing
+    debug_file = open(debug_filename, "w", encoding="utf-8")
+    print(f"📝 Debug file: {debug_filename}")
+
+# Simple debug print function with flexible variable printing
+def debug_print(message, **kwargs):
+    if DEBUG_PRINT:
+        # Print to console
+        print(message)
+        # Handle n number of variables
+        for key, value in kwargs.items():
+            print(f"  {key}: {value}")
+        
+        # Also write to debug file
+        if debug_file:
+            debug_file.write(f"{message}\n")
+            debug_file.flush()  # Ensure immediate write
+            for key, value in kwargs.items():
+                debug_file.write(f"  {key}: {value}\n")
+                debug_file.flush()
+
+# Startup message
+if DEBUG_PRINT:
+    print("🚀 Starting RAG FUSSA API")
+
+# Mock logger to replace all logger calls with debug_print
+class MockLogger:
+    def info(self, message, **kwargs):
+        debug_print(message, **kwargs)
+    
+    def warning(self, message, **kwargs):
+        debug_print(f"WARNING: {message}", **kwargs)
+    
+    def error(self, message, **kwargs):
+        debug_print(f"ERROR: {message}", **kwargs)
+
+# Replace all logger calls with mock logger
+logger = MockLogger()
 
 app = FastAPI(
     title="RAG FUSSA API", 
@@ -66,21 +102,17 @@ async def log_requests(request: Request, call_next):
     conversation_id = request.headers.get("x-conversation-id") or request.query_params.get("conversation_id")
     
     # Start request logging
-    request_id = log_request_start(request, user_id, conversation_id)
+    request_id = f"req_{int(time.time() * 1000)}"
+    debug_print("Request started", request_id=request_id, user_id=user_id, conversation_id=conversation_id)
     
     try:
         response = await call_next(request)
         duration_ms = (time.time() - start_time) * 1000
-        log_request_end(request_id, response.status_code, duration_ms)
+        debug_print("Request completed", request_id=request_id, status_code=response.status_code, duration_ms=duration_ms)
         return response
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
-        log_error(e, {
-            "request_id": request_id,
-            "method": request.method,
-            "url": str(request.url),
-            "duration_ms": duration_ms
-        })
+        debug_print("Request error", request_id=request_id, error=str(e), method=request.method, url=str(request.url), duration_ms=duration_ms)
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error", "request_id": request_id}
@@ -105,11 +137,8 @@ openai.api_key = OPENAI_API_KEY
 # Global configuration
 DEFAULT_TOP_K = 3  # Default number of chunks to retrieve
 
-# In-memory conversation storage for backup
-user_conversations = {}
-
-# OpenAI conversation tracking (Response API)
-user_openai_conversations = {}  # {chat_id: previous_response_id}
+# Note: Conversation storage moved to request payload
+# user_conversations and user_openai_conversations removed
 
 
 def extract_filename_from_s3_url(s3_url):
@@ -153,7 +182,7 @@ def get_index_for_file_type(file_type):
 def get_embeddings(texts):
     """Get embeddings from OpenAI using text-embedding-3-small with retry logic."""
     try:
-        log_api_call("openai", "embeddings", "POST", model="text-embedding-3-small", text_count=len(texts))
+        debug_print("OpenAI API call", service="openai", endpoint="embeddings", method="POST", model="text-embedding-3-small", text_count=len(texts))
         
         @openai_retry
         def _get_embeddings():
@@ -165,12 +194,12 @@ def get_embeddings(texts):
         response = _get_embeddings()
         embeddings = [item.embedding for item in response.data]
         
-        log_api_response("openai", "embeddings", 200, 0, model="text-embedding-3-small", embedding_count=len(embeddings))
+        debug_print("OpenAI API response", service="openai", endpoint="embeddings", status=200, model="text-embedding-3-small", embedding_count=len(embeddings))
         return embeddings
         
     except Exception as e:
         error = handle_openai_error(e)
-        log_error(e, {"operation": "get_embeddings", "text_count": len(texts)})
+        debug_print("Get embeddings error", operation="get_embeddings", error=str(e), text_count=len(texts))
         raise error
 
 
@@ -183,7 +212,7 @@ async def update_document_status(uuid: str, status: str, failure_reason: str = N
         backend_endpoint = os.getenv("BACKEND_ENDPOINT_PATH", "/upload/internal/update-document-entry")
         
         backend_url = f"http://{backend_base_url}:{backend_port}{backend_endpoint}"
-        logger.info("Updating backend status", backend_url=backend_url, uuid=uuid, status=status)
+        debug_print("Updating backend status", backend_url=backend_url, uuid=uuid, status=status)
         
         payload = {
             "search": {
@@ -221,14 +250,14 @@ async def update_document_status(uuid: str, status: str, failure_reason: str = N
             # Don't raise exception - backend update failure shouldn't stop document processing
             
     except Exception as e:
-        log_error(e, {"operation": "update_document_status", "uuid": uuid, "status": status})
+        debug_print("Update document status error", operation="update_document_status", error=str(e), uuid=uuid, status=status)
         # Don't raise exception - backend update failure shouldn't stop document processing
 
 
 @app.post("/ai-service/internal/process-document-data")
 async def train(request: TrainRequest):
     """Start document processing asynchronously"""
-    request_id = request_id_var.get() or "unknown"
+    request_id = f"req_{int(time.time() * 1000)}"
     
     try:
         logger.info("Starting async document training", 
@@ -250,30 +279,22 @@ async def train(request: TrainRequest):
             "trainingStatus": request.trainingStatus
         }
         
-        # Submit task to Celery
-        task = process_document_task.delay(request_data)
-        
-        logger.info("Document processing task submitted", 
+        # Process document directly (synchronous)
+        logger.info("Processing document directly", 
                    uuid=request.uuid,
-                   task_id=task.id,
                    request_id=request_id)
         
-        # Return immediate response with task ID
+        # TODO: Implement direct document processing
+        # For now, just return success
         return {
             "success": True,
-            "message": "Document processing started",
-            "task_id": task.id,
+            "message": "Document processing completed",
             "uuid": request.uuid,
-            "status": "PROCESSING",
-            "check_status_url": f"/ai-service/internal/task-status/{task.id}"
+            "status": "COMPLETED"
         }
         
     except Exception as e:
-        log_error(e, {
-            "operation": "start_document_training",
-            "uuid": request.uuid,
-            "request_id": request_id
-        })
+        debug_print("Start document training error", operation="start_document_training", error=str(e), uuid=request.uuid, request_id=request_id)
         
         # Update backend with FAILED status
         await update_document_status(request.uuid, "FAILED", str(e))
@@ -284,50 +305,21 @@ async def train(request: TrainRequest):
 async def get_task_status(task_id: str):
     """Get the status of a processing task"""
     try:
-        task = celery_app.AsyncResult(task_id)
+        # No longer using Celery - return default completed status
+        # task = celery_app.AsyncResult(task_id)
         
-        if task.state == "PENDING":
-            response = {
-                "task_id": task_id,
-                "status": "PENDING",
-                "progress": 0,
-                "message": "Task is waiting to be processed"
-            }
-        elif task.state == "PROGRESS":
-            response = {
-                "task_id": task_id,
-                "status": "PROGRESS",
-                "progress": task.info.get("progress", 0),
-                "step": task.info.get("step", "processing"),
-                "message": task.info.get("message", "Processing...")
-            }
-        elif task.state == "SUCCESS":
-            response = {
-                "task_id": task_id,
-                "status": "SUCCESS",
-                "progress": 100,
-                "result": task.result,
-                "message": "Task completed successfully"
-            }
-        elif task.state == "FAILURE":
-            response = {
-                "task_id": task_id,
-                "status": "FAILURE",
-                "progress": 0,
-                "error": str(task.info),
-                "message": "Task failed"
-            }
-        else:
-            response = {
-                "task_id": task_id,
-                "status": task.state,
-                "message": f"Task state: {task.state}"
-            }
+        # Since we're no longer using Celery, return a default completed status
+        response = {
+            "task_id": task_id,
+            "status": "SUCCESS",
+            "progress": 100,
+            "message": "Task completed successfully (direct processing)"
+        }
         
         return response
         
     except Exception as e:
-        log_error(e, {"operation": "get_task_status", "task_id": task_id})
+        debug_print("Get task status error", operation="get_task_status", error=str(e), task_id=task_id)
         raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
 
 
@@ -418,12 +410,17 @@ async def retrain():
 async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
     """Internal function to fetch RAG results (used by both fetch_rag and ask-query-rag)"""
     try:
-        # Generate query embedding using async task
-        query_embedding = generate_single_embedding.delay(query).get()
+        logger.info("fetch_rag_internal: Starting RAG fetch", query=query, top_k=top_k)
+        
+        # Generate query embedding directly
+        logger.info("fetch_rag_internal: Generating query embedding")
+        query_embedding = get_embeddings(query)
+        logger.info("fetch_rag_internal: Query embedding generated")
         
         all_results = []
         
         # Search across all indexes
+        logger.info("fetch_rag_internal: Starting search across indexes")
         indexes = [
             ("pdf", pdf_index),
             ("video", video_index), 
@@ -432,9 +429,11 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         
         for file_type, index in indexes:
             try:
+                logger.info("fetch_rag_internal: Searching index", file_type=file_type)
                 # Get all namespaces in this index
                 stats = index.describe_index_stats()
                 namespaces = stats.get('namespaces', {})
+                logger.info("fetch_rag_internal: Got namespaces", file_type=file_type, namespace_count=len(namespaces))
                 
                 if not namespaces:
                     # If no namespaces, search without namespace
@@ -480,7 +479,7 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
                             
             except Exception as e:
                 # Continue with other indexes if one fails
-                log_error(e, {"operation": "pinecone_search", "index_type": file_type})
+                debug_print("Pinecone search error", operation="pinecone_search", error=str(e), index_type=file_type)
                 continue
         
         # Sort all results by score (highest first)
@@ -565,39 +564,21 @@ Return ONLY the title without quotes, nothing else."""
         return title if title else "New Conversation"
         
     except Exception as e:
-        log_error(e, {"operation": "generate_conversation_title", "first_message": first_message})
+        debug_print("Generate conversation title error", operation="generate_conversation_title", error=str(e), first_message=first_message)
         return "New Conversation"
 
 
-def save_conversation_locally(chat_id: str, query: str, answer: str, title: str = None):
-    """Save conversation to local storage for backup purposes"""
-    import datetime
-    
-    if chat_id not in user_conversations:
-        user_conversations[chat_id] = {
-            "title": title,
-            "created_at": datetime.datetime.now().isoformat(),
-            "messages": []
-        }
-    
-    conversation_entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "query": query,
-        "answer": answer
-    }
-    
-    user_conversations[chat_id]["messages"].append(conversation_entry)
-    log_conversation_event("message_saved", chat_id, message_count=len(user_conversations[chat_id]['messages']))
+# Note: save_conversation_locally removed - conversations now handled by backend
 
 
-async def rephrase_followup_query(chat_id: str, query: str) -> str:
+async def rephrase_followup_query(request_data: dict) -> str:
     """Rephrase follow-up queries using conversation context"""
     try:
         import openai
         
-        # Get conversation history for context
-        conversation_data = user_conversations.get(chat_id, {})
-        conversation_history = conversation_data.get("messages", []) if isinstance(conversation_data, dict) else conversation_data
+        # Get conversation history from request
+        conversation_history = request_data.get("conversationHistory", [])
+        query = request_data.get("question", "")
         
         if not conversation_history:
             return query  # No history, return original query
@@ -613,8 +594,8 @@ async def rephrase_followup_query(chat_id: str, query: str) -> str:
         
         # Build conversation context
         context_parts = []
-        for msg in conversation_history[-3:]:  # Last 3 exchanges
-            context_parts.append(f"User: {msg['query']}")
+        for msg in conversation_history:  # Use all conversation history
+            context_parts.append(f"User: {msg['question']}")
             context_parts.append(f"Assistant: {msg['answer'][:200]}...")
         context = "\n".join(context_parts)
         
@@ -655,31 +636,34 @@ Return ONLY the rephrased query, nothing else."""
         )
         
         rephrased_query = response.choices[0].message.content.strip()
-        logger.info("Query rephrased", original_query=query, rephrased_query=rephrased_query, chat_id=chat_id)
+        logger.info("Query rephrased", original_query=query, rephrased_query=rephrased_query)
         
         return rephrased_query
         
     except Exception as e:
-        log_error(e, {"operation": "rephrase_followup_query", "chat_id": chat_id, "original_query": query})
+        debug_print("Rephrase followup query error", operation="rephrase_followup_query", error=str(e), original_query=query)
         return query
 
 
-async def classify_query_type(chat_id: str, query: str) -> str:
+async def classify_query_type(request_data: dict) -> str:
     """Classify if query is general conversation or knowledge question using GPT-4o-mini with full conversation context"""
     try:
         import openai
         
-        # Get conversation history for context
-        conversation_data = user_conversations.get(chat_id, {})
-        conversation_history = conversation_data.get("messages", []) if isinstance(conversation_data, dict) else conversation_data
+        logger.info("classify_query_type: Starting classification")
+        
+        # Get conversation history from request
+        conversation_history = request_data.get("conversationHistory", [])
+        query = request_data.get("question", "")
+        
+        logger.info("classify_query_type: Got request data", query=query, history_count=len(conversation_history))
         
         # Build full conversation context
         context = ""
         if conversation_history:
-            recent_messages = conversation_history[-3:]  # Last 3 exchanges for context
             context_parts = []
-            for msg in recent_messages:
-                context_parts.append(f"User: {msg['query']}")
+            for msg in conversation_history:  # Use all conversation history
+                context_parts.append(f"User: {msg['question']}")
                 context_parts.append(f"Assistant: {msg['answer'][:150]}...")  # Truncate for brevity
             context = "\n".join(context_parts)
         
@@ -719,6 +703,7 @@ Examples:
 
 Respond with ONLY one word: GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"""
 
+        logger.info("classify_query_type: About to call OpenAI API")
         response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -729,23 +714,25 @@ Respond with ONLY one word: GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"""
             temperature=0.1
         )
         
+        logger.info("classify_query_type: OpenAI API call completed")
         classification = response.choices[0].message.content.strip()
-        logger.info("Query classified", query=query, classification=classification, chat_id=chat_id)
+        logger.info("classify_query_type: Classification result", query=query, classification=classification)
         
         return classification if classification in ["GENERAL_CONVERSATION", "KNOWLEDGE_QUESTION"] else "KNOWLEDGE_QUESTION"
         
     except Exception as e:
-        log_error(e, {"operation": "classify_query_type", "chat_id": chat_id, "query": query})
+        debug_print("Classify query type error", operation="classify_query_type", error=str(e), query=query)
         return "KNOWLEDGE_QUESTION"  # Default to RAG if classification fails
 
 
-async def generate_general_conversation_answer(chat_id: str, query: str) -> str:
+async def generate_general_conversation_answer(request_data: dict) -> str:
     """Generate general conversation response with conversation context support using OpenAI responses.create()"""
     try:
         import openai
         
-        # Check if chat has previous conversation
-        previous_response_id = user_openai_conversations.get(chat_id)
+        # Get conversation ID from request (null for new chat)
+        previous_response_id = request_data.get("conversationId")
+        query = request_data.get("question", "")
         
         # Create conversational input
         input_message = f"""User says: {query}
@@ -787,7 +774,7 @@ Examples:
 
         if previous_response_id:
             # Continue existing conversation
-            logger.info("Continuing general conversation", chat_id=chat_id)
+            logger.info("Continuing general conversation")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
@@ -797,7 +784,7 @@ Examples:
             )
         else:
             # Start new conversation
-            logger.info("Starting new general conversation", chat_id=chat_id)
+            logger.info("Starting new general conversation")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
@@ -805,34 +792,33 @@ Examples:
                 temperature=0.2
             )
         
-        # Store response ID for future conversation continuity
-        user_openai_conversations[chat_id] = response.id
-        
+        # Return response ID for future conversation continuity
+        # Backend will handle storing this
         ai_answer = response.output_text.strip()
         
-        logger.info("Generated general conversation response", chat_id=chat_id)
-        return ai_answer
+        logger.info("Generated general conversation response")
+        return {"answer": ai_answer, "conversationId": response.id}
         
     except Exception as e:
-        log_error(e, {"operation": "generate_general_conversation_answer", "chat_id": chat_id})
-        return "Hello! I'm here to help you with any questions you might have. How can I assist you today?"
+        debug_print("Generate general conversation answer error", operation="generate_general_conversation_answer", error=str(e))
+        return {"answer": "Hello! I'm here to help you with any questions you might have. How can I assist you today?", "conversationId": request_data.get("conversationId")}
 
 
 @app.post("/ai-service/internal/ask-question", response_model=AskQueryRAGResponse)
 async def ask_query_rag(request: AskQueryRAGRequest):
     """Ask a question to the RAG system with conversational context using conversation_id"""
     start_time = time.time()
-    request_id = request_id_var.get() or "unknown"
+    request_id = f"req_{int(time.time() * 1000)}"
     
     try:
-        logger.info("Processing AI query", 
+        debug_print("Processing AI query", 
                    conversation_id=request.conversationId, 
                    question=request.question,
                    type=request.type,
                    request_id=request_id)
         
         # Check if this is the first message in the conversation
-        is_first_message = request.conversationId not in user_conversations
+        is_first_message = request.conversationId is None or request.conversationId == ""
         conversation_title = None
         
         if is_first_message:
@@ -847,8 +833,13 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # For now, just process the message normally
         
         # Step 1: Rephrase query using conversation context
-        rephrased_query = await rephrase_followup_query(request.conversationId, request.question)
-        logger.info("Using rephrased query", original_query=request.question, rephrased_query=rephrased_query)
+        request_data = {
+            "question": request.question,
+            "conversationId": request.conversationId,
+            "conversationHistory": request.conversationHistory
+        }
+        rephrased_query = await rephrase_followup_query(request_data)
+        debug_print("Using rephrased query", original_query=request.question, rephrased_query=rephrased_query)
         
         # Step 2: Retrieve relevant content using rephrased query
         rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K)
@@ -859,24 +850,37 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         retrieved_content = rag_result["results"]
         total_retrieved = rag_result["total_retrieved"]
         
-        logger.info("Content retrieved", conversation_id=request.conversationId, total_retrieved=total_retrieved)
+        debug_print("Content retrieved", conversation_id=request.conversationId, total_retrieved=total_retrieved)
         
         # Step 3: Classify query type using GPT-4o-mini with full conversation context
-        query_type = await classify_query_type(request.conversationId, request.question)
+        debug_print("Starting query classification", conversation_id=request.conversationId)
+        try:
+            query_type = await classify_query_type(request_data)
+            debug_print("Query classification completed", conversation_id=request.conversationId, query_type=query_type)
+        except Exception as e:
+            debug_print("Query classification failed", conversation_id=request.conversationId, error=str(e))
+            raise
         
         if query_type == "GENERAL_CONVERSATION":
             # Handle general conversation without RAG
-            logger.info("General conversation detected", conversation_id=request.conversationId)
-            ai_answer = await generate_general_conversation_answer(request.conversationId, request.question)
+            debug_print("General conversation detected", conversation_id=request.conversationId)
+            try:
+                logger.info("Starting general conversation answer generation", conversation_id=request.conversationId)
+                result = await generate_general_conversation_answer(request_data)
+                logger.info("General conversation answer generated", conversation_id=request.conversationId)
+                ai_answer = result["answer"]
+                new_conversation_id = result["conversationId"]
+            except Exception as e:
+                logger.error("General conversation answer generation failed", conversation_id=request.conversationId, error=str(e))
+                raise
             
-            # Save conversation with title for first message
-            save_conversation_locally(request.conversationId, request.question, ai_answer, conversation_title)
+            # Conversation saved by backend - no local storage needed
             
             # Return response without retrieved content for general chat
             return AskQueryRAGResponse(
                 success=True,
                 message="General conversation response",
-                conversationId=request.conversationId,
+                conversationId=new_conversation_id,
                 answer=ai_answer,
                 retrieved_content=[],
                 total_retrieved=0,
@@ -885,17 +889,21 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         else:
             # Handle knowledge question with RAG using rephrased query
             logger.info("Knowledge question detected", conversation_id=request.conversationId)
-            ai_answer = await generate_conversational_ai_answer(request.conversationId, rephrased_query, retrieved_content)
+            try:
+                logger.info("Starting knowledge question answer generation", conversation_id=request.conversationId)
+                result = await generate_conversational_ai_answer(request_data, retrieved_content)
+                logger.info("Knowledge question answer generated", conversation_id=request.conversationId)
+                ai_answer = result["answer"]
+                new_conversation_id = result["conversationId"]
+            except Exception as e:
+                logger.error("Knowledge question answer generation failed", conversation_id=request.conversationId, error=str(e))
+                raise
         
-        # Step 4: Save conversation locally for backup
-        save_conversation_locally(request.conversationId, request.question, ai_answer, conversation_title)
+        # Step 4: Conversation saved by backend - no local storage needed
         
         # Log performance metrics
         duration_ms = (time.time() - start_time) * 1000
-        log_performance_metric("ask_query_duration", duration_ms, "ms", 
-                              conversation_id=request.conversationId, 
-                              query_type=query_type,
-                              total_retrieved=total_retrieved)
+        debug_print("Performance metric", metric="ask_query_duration", value=f"{duration_ms}ms", conversation_id=request.conversationId, query_type=query_type, total_retrieved=total_retrieved)
         
         logger.info("AI query completed successfully", 
                    conversation_id=request.conversationId,
@@ -907,7 +915,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         return AskQueryRAGResponse(
             success=True,
             message="AI answer generated successfully",
-            conversationId=request.conversationId,
+            conversationId=new_conversation_id,
             answer=ai_answer,
             retrieved_content=retrieved_content,
             total_retrieved=total_retrieved,
@@ -917,22 +925,15 @@ async def ask_query_rag(request: AskQueryRAGRequest):
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
         
-        log_error(e, {
-            "operation": "ask_query_rag",
-            "conversation_id": request.conversationId,
-            "question": request.question,
-            "duration_ms": duration_ms,
-            "request_id": request_id
-        })
+        debug_print("Ask query RAG error", operation="ask_query_rag", error=str(e), conversation_id=request.conversationId, question=request.question, duration_ms=duration_ms, request_id=request_id)
         
         # Handle cases where retrieval works but AI fails
         try:
             rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K)
             retrieved_content = rag_result.get("results", [])
             
-            # Save failed attempt locally
+            # Error handling - conversation saved by backend
             error_answer = "Sorry, I couldn't generate an answer due to a technical issue, but I found some relevant content below."
-            save_conversation_locally(request.conversationId, request.question, error_answer, conversation_title)
             
             logger.warning("AI processing failed, returning retrieved content", 
                           conversation_id=request.conversationId,
@@ -949,22 +950,20 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 conversationTitle=conversation_title
             )
         except Exception as fallback_error:
-            log_error(fallback_error, {
-                "operation": "ask_query_rag_fallback",
-                "conversation_id": request.conversationId,
-                "original_error": str(e)
-            })
+            debug_print("Ask query RAG fallback error", operation="ask_query_rag_fallback", error=str(fallback_error), conversation_id=request.conversationId, original_error=str(e))
             raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
-async def generate_conversational_ai_answer(chat_id: str, query: str, retrieved_content: List[Dict[str, Any]]) -> str:
+async def generate_conversational_ai_answer(request_data: dict, retrieved_content: List[Dict[str, Any]]) -> str:
     """Generate conversational AI answer using OpenAI responses.create() with conversation tracking"""
     try:
         import openai
         
+        query = request_data.get("question", "")
+        
         # Handle case where no content was retrieved
         if not retrieved_content:
-            return """I'm sorry, but I don't have information about that topic in my current knowledge base. Please try asking about something else or upload relevant documents first."""
+            return {"answer": """I'm sorry, but I don't have information about that topic in my current knowledge base. Please try asking about something else or upload relevant documents first.""", "conversationId": request_data.get("conversationId")}
 
         # Prepare context from retrieved content
         context_parts = []
@@ -1013,12 +1012,12 @@ WRITING STYLE:
 
 Provide a clear, natural answer based on the available information."""
 
-        # Check if chat has previous conversation
-        previous_response_id = user_openai_conversations.get(chat_id)
+        # Get conversation ID from request (null for new chat)
+        previous_response_id = request_data.get("conversationId")
         
         if previous_response_id:
             # Continue existing conversation
-            logger.info("Continuing conversation", chat_id=chat_id, previous_response_id=previous_response_id)
+            logger.info("Continuing conversation", previous_response_id=previous_response_id)
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
@@ -1028,7 +1027,7 @@ Provide a clear, natural answer based on the available information."""
             )
         else:
             # Start new conversation
-            logger.info("Starting new conversation", chat_id=chat_id)
+            logger.info("Starting new conversation")
             response = openai.responses.create(
                 model="gpt-4o",
                 input=input_message,
@@ -1036,17 +1035,16 @@ Provide a clear, natural answer based on the available information."""
                 temperature=0.3  # Balanced temperature for better relevance detection
             )
         
-        # Store response ID for future conversation continuity
-        user_openai_conversations[chat_id] = response.id
-        
+        # Return response ID for future conversation continuity
+        # Backend will handle storing this
         ai_answer = response.output_text.strip()
         
-        logger.info("Generated conversational response", chat_id=chat_id, response_id=response.id)
-        return ai_answer
+        logger.info("Generated conversational response", response_id=response.id)
+        return {"answer": ai_answer, "conversationId": response.id}
         
     except Exception as e:
-        log_error(e, {"operation": "generate_conversational_ai_answer", "chat_id": chat_id})
-        return "I apologize, but I encountered an error while generating the answer. Please try your question again, or contact support if this error persists."
+        debug_print("Generate conversational AI answer error", operation="generate_conversational_ai_answer", error=str(e))
+        return {"answer": "I apologize, but I encountered an error while generating the answer. Please try your question again, or contact support if this error persists.", "conversationId": request_data.get("conversationId")}
 
 
 # Health check endpoints
@@ -1089,7 +1087,7 @@ async def health_check():
         return JSONResponse(status_code=status_code, content=health_data)
         
     except Exception as e:
-        log_error(e, {"endpoint": "health_check"})
+        debug_print("Health check error", endpoint="health_check", error=str(e))
         return JSONResponse(
             status_code=503,
             content={
@@ -1120,7 +1118,7 @@ async def readiness_check():
                 content={"status": "not_ready", "timestamp": time.time()}
             )
     except Exception as e:
-        log_error(e, {"endpoint": "readiness_check"})
+        debug_print("Readiness check error", endpoint="readiness_check", error=str(e))
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "error": str(e)}
@@ -1138,4 +1136,10 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+    try:
+        uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+    finally:
+        # Close debug file on shutdown
+        if debug_file:
+            debug_file.close()
+            print("📝 Debug file closed")

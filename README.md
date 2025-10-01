@@ -1,266 +1,289 @@
 # RAG FUSSA API
 
-A production-ready RAG (Retrieval-Augmented Generation) API built with FastAPI, supporting PDF, video, and image document processing with intelligent chunking and vector storage.
+A production-ready Retrieval-Augmented Generation (RAG) API built with FastAPI, designed to handle document processing, conversation management, and intelligent query responses.
 
 ## 🚀 Features
 
-- **Multi-format Document Processing**: PDF, video, and image support
-- **Intelligent Chunking**: Semantic, hierarchical, and markdown-aware text splitting
-- **Vector Storage**: Pinecone integration for scalable similarity search
-- **Conversational AI**: Context-aware chat with conversation history
-- **Production Ready**: Health checks, structured logging, error handling, and retry logic
-- **Cloud Integration**: AWS S3 for file storage, OpenAI for embeddings and chat
+### Core Functionality
+- **Document Processing**: PDF, Video, and Image content extraction and indexing
+- **RAG System**: Intelligent question answering with retrieved context
+- **Conversation Management**: Context-aware multi-turn conversations
+- **Health Monitoring**: Comprehensive health checks for all dependencies
+- **Async Processing**: Non-blocking document processing pipeline
 
-## 📋 Prerequisites
+### Smart Query Processing
+- **Query Classification**: Automatically distinguishes between general conversation and knowledge questions
+- **Context Retrieval**: Semantic search across multiple document types
+- **Conversation Continuity**: Maintains context across conversation turns
+- **Response Generation**: OpenAI-powered intelligent responses
 
+## 🛠️ Technology Stack
+
+- **FastAPI**: Modern, fast web framework
+- **OpenAI**: GPT-4o-mini for text generation and embeddings
+- **Pinecone**: Vector database for semantic search
+- **AWS S3**: Document storage and retrieval
+- **Pydantic**: Data validation and serialization
+- **Tenacity**: Retry logic and error handling
+
+## 📁 Project Structure
+
+```
+rag_fussa/
+├── src/
+│   ├── config/
+│   │   ├── config.py          # Configuration management
+│   │   └── schemas.py         # Pydantic models
+│   ├── processors/
+│   │   ├── pdf_processor.py   # PDF text extraction
+│   │   ├── video_processor.py # Video transcription
+│   │   └── image_processor.py # Image OCR processing
+│   ├── utils/
+│   │   ├── health_checks.py   # Health monitoring
+│   │   ├── error_handling.py  # Error management
+│   │   ├── chunking.py        # Text chunking utilities
+│   │   ├── smart_chunking.py  # Intelligent text segmentation
+│   │   ├── text_pipeline.py   # Text processing pipeline
+│   │   ├── setup_pinecone.py  # Pinecone initialization
+│   │   ├── export_chunks.py   # Data export utilities
+│   │   └── upload_to_s3.py    # S3 upload functionality
+│   └── main.py               # Main FastAPI application
+├── docs/
+│   ├── README.md             # Detailed documentation
+│   └── RAG_FUSSA_API.postman_collection.json
+├── logs/                     # Debug logs (with .gitkeep)
+├── data_extraction_visualize/ # Processing data
+├── data_to_upload_to_S3/     # Source documents
+├── requirements.txt          # Python dependencies
+└── .env                      # Environment variables
+```
+
+## 🔧 Installation
+
+### Prerequisites
 - Python 3.12+
 - OpenAI API key
-- Pinecone account and API key
-- AWS S3 bucket and credentials
-- (Optional) AssemblyAI API key for video transcription
+- Pinecone API key
+- AWS credentials (for S3)
+- Backend API endpoint
 
-## 🛠️ Installation
+### Setup
 
 1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd rag_fussa
-   ```
+```bash
+git clone <repository-url>
+cd rag_fussa
+```
 
 2. **Create virtual environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
 3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
 4. **Configure environment**
-   ```bash
-   cp src/config/env_template.txt .env
-   # Edit .env with your API keys and configuration
-   ```
+```bash
+cp src/config/env_template.txt .env
+# Edit .env with your API keys and configuration
+```
+
+5. **Set up Pinecone**
+```bash
+python src/utils/setup_pinecone.py
+```
 
 ## ⚙️ Configuration
+
+### Environment Variables
 
 Create a `.env` file with the following variables:
 
 ```bash
 # API Keys
-OPENAI_API_KEY=your_openai_api_key_here
-PINECONE_API_KEY=your_pinecone_api_key_here
-AWS_ACCESS_KEY_ID=your_aws_access_key_id_here
-AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key_here
+OPENAI_API_KEY=your_openai_api_key
+PINECONE_API_KEY=your_pinecone_api_key
 
-# Pinecone Configuration
-PINECONE_PDF_INDEX=rag-pdfs
-PINECONE_VIDEO_INDEX=rag-videos
-PINECONE_IMAGE_INDEX=rag-images
+# AWS Configuration
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+AWS_S3_BUCKET=your_s3_bucket_name
+AWS_REGION=your_aws_region
 
-# Logging & Environment
-LOG_LEVEL=INFO
-ENVIRONMENT=development
+# Backend Configuration
+BACKEND_BASE_URL=your_backend_host
+BACKEND_PORT=your_backend_port
+BACKEND_ENDPOINT_PATH=/your/endpoint/path
+
+# Debug Configuration
+DEBUG_PRINT=false  # Set to true for console debug output
+
+# CORS Configuration
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 ```
 
-## 🏃‍♂️ Running the Application
+### Debug Mode
 
-### Prerequisites
-- Redis server running on port 6379
-- All API keys configured in `.env` file
+Set `DEBUG_PRINT=true` in your `.env` file to enable:
+- Console debug output with timestamps
+- Automatic debug file logging with datetime filenames
+- Detailed request/response tracking
 
-### Development (Easy Start)
+Debug files are saved as: `logs/YYYY-MM-DD_HH-MM-SS_debug.log`
+
+## 🚀 Usage
+
+### Start the Server
+
 ```bash
-# Start Redis (if not already running)
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Start everything with one command
-./start_dev.sh
-```
-
-### Development (Manual Start)
-```bash
-# Terminal 1: Start Celery worker
-python start_worker.py
-
-# Terminal 2: Start FastAPI server
+# Development mode with auto-reload
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Production mode
+uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Production with Docker
-```bash
-docker-compose up -d
-```
+### API Endpoints
 
-### Production (Manual)
-```bash
-# Start Celery worker
-python start_worker.py
+#### Health Checks
+- `GET /health` - Overall system health
+- `GET /health/live` - Liveness probe
+- `GET /health/ready` - Readiness probe
 
-# Start FastAPI server
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-## 📚 API Endpoints
-
-### Health Checks
-- `GET /health` - Comprehensive health check with all dependencies
-- `GET /health/live` - Simple liveness check for Kubernetes
-- `GET /health/ready` - Readiness check for load balancers
-
-### Document Processing
-- `POST /ai-service/internal/process-document-data` - Start async document processing
+#### Document Processing
+- `POST /ai-service/internal/process-document-data` - Process documents
 - `GET /ai-service/internal/task-status/{task_id}` - Check processing status
-- `POST /unprocess-document-data` - Remove documents from index
 
-### Query & Chat
-- `POST /fetch_rag` - Retrieve relevant content without AI processing
-- `POST /ai-service/internal/ask-question` - Conversational AI with RAG
+#### Query Interface
+- `POST /ai-service/internal/ask-question` - Ask questions with RAG
 
-## 🔍 API Documentation
+### Example API Calls
 
-Once the server is running, visit:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-
-## 🏗️ Architecture
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   FastAPI App   │────│  Celery Worker  │────│  Redis Broker   │
-│                 │    │  (Async Tasks)  │    │  & Result Store │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │                       │                       │
-         │              ┌─────────────────┐              │
-         │              │  Document       │              │
-         │              │  Processing     │              │
-         │              │  Pipeline       │              │
-         │              └─────────────────┘              │
-         │                       │                       │
-         │              ┌─────────────────┐              │
-         └──────────────│  Smart Chunking │──────────────┘
-                        │  & Embeddings   │
-                        └─────────────────┘
-                                 │
-                        ┌─────────────────┐
-                        │  OpenAI API     │
-                        │  (Embeddings &  │
-                        │   Chat)         │
-                        └─────────────────┘
+#### Ask a Question (New Conversation)
+```json
+POST /ai-service/internal/ask-question
+{
+  "question": "What is artificial intelligence?",
+  "conversationId": null,
+  "type": "TEXT",
+  "conversationHistory": []
+}
 ```
 
-## ⚡ Async Processing
-
-The system now uses **Celery + Redis** for asynchronous document processing:
-
-### Benefits
-- **Non-blocking API**: Document processing doesn't block the API
-- **Scalable**: Multiple workers can process documents in parallel
-- **Progress Tracking**: Real-time status updates and progress monitoring
-- **Resilient**: Failed tasks can be retried automatically
-- **Resource Efficient**: Better memory and CPU utilization
-
-### Processing Flow
-1. **API Request**: Client submits document for processing
-2. **Immediate Response**: API returns task ID immediately
-3. **Background Processing**: Celery worker processes document asynchronously
-4. **Progress Updates**: Client can check status using task ID
-5. **Completion**: Final result available when processing completes
-
-### Task Queues
-- **document_processing**: Heavy document processing tasks
-- **embeddings**: Embedding generation tasks
-- **default**: General purpose tasks
-
-## 📊 Monitoring & Logging
-
-### Structured Logging
-- **Development**: Colored console output with request tracking
-- **Production**: JSON formatted logs for log aggregation
-- **Log Levels**: DEBUG, INFO, WARNING, ERROR, CRITICAL
-
-### Health Monitoring
-- Dependency health checks (OpenAI, Pinecone, S3, Backend)
-- Performance metrics and request tracking
-- Circuit breakers for service resilience
-
-### Log Files
-- `logs/rag_fussa.log` - Application logs
-- `logs/rag_fussa_errors.log` - Error logs only
-
-### Task Monitoring
-```bash
-# Monitor active tasks
-python monitor_tasks.py
-
-# Check specific task status
-python monitor_tasks.py <task_id>
+#### Continue a Conversation
+```json
+POST /ai-service/internal/ask-question
+{
+  "question": "Tell me more about that",
+  "conversationId": "resp_abc123...",
+  "type": "TEXT",
+  "conversationHistory": [
+    {
+      "timestamp": "2025-01-01T10:00:00Z",
+      "question": "What is AI?",
+      "answer": "AI is the simulation of human intelligence..."
+    }
+  ]
+}
 ```
 
-## 🔧 Production Deployment
-
-### Docker (Recommended)
-```dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY src/ ./src/
-EXPOSE 8000
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+#### Process a Document
+```json
+POST /ai-service/internal/process-document-data
+{
+  "uuid": "unique-document-id",
+  "url": "s3://bucket/document.pdf",
+  "type": "PDF",
+  "trainingStatus": "PENDING"
+}
 ```
 
-### Environment Variables for Production
-```bash
-ENVIRONMENT=production
-LOG_LEVEL=INFO
-ALLOWED_ORIGINS=https://yourdomain.com,https://api.yourdomain.com
-```
+## 🔍 Query Processing Flow
 
-### Kubernetes Health Checks
-```yaml
-livenessProbe:
-  httpGet:
-    path: /health/live
-    port: 8000
-readinessProbe:
-  httpGet:
-    path: /health/ready
-    port: 8000
-```
+1. **Request Reception**: API receives query with conversation context
+2. **Query Rephrasing**: Context-aware query enhancement for better retrieval
+3. **Content Retrieval**: Semantic search across Pinecone vector database
+4. **Query Classification**: Determines if it's general conversation or knowledge question
+5. **Response Generation**: OpenAI-powered answer with retrieved context
+6. **Context Update**: Updates conversation history for future turns
 
-## 🛡️ Security Features
+## 📊 Health Monitoring
 
-- **CORS Configuration**: Restrictive origin policies
-- **Input Validation**: Pydantic schemas for all endpoints
-- **Error Handling**: Secure error responses without sensitive data
-- **API Key Management**: Environment-based configuration
-- **Request Tracking**: Correlation IDs for debugging
+The API provides comprehensive health checks:
 
-## 📈 Performance Features
+- **OpenAI**: API connectivity and response times
+- **Pinecone**: Vector database status and performance
+- **AWS S3**: Storage service availability
+- **Backend API**: External service connectivity
+- **File System**: Local storage and permissions
 
-- **Retry Logic**: Exponential backoff for transient failures
-- **Circuit Breakers**: Prevent cascade failures
-- **Async Processing**: Non-blocking I/O operations
-- **Request Correlation**: Track requests across services
-- **Performance Metrics**: Response time monitoring
+## 🛡️ Error Handling
+
+- **Retry Logic**: Automatic retries with exponential backoff
+- **Circuit Breaker**: Prevents cascade failures
+- **Graceful Degradation**: Fallback responses when services fail
+- **Comprehensive Logging**: Detailed error tracking and debugging
 
 ## 🧪 Testing
 
+Use the provided Postman collection:
 ```bash
-# Test health endpoints
-curl http://localhost:8000/health
-curl http://localhost:8000/health/live
-curl http://localhost:8000/health/ready
-
-# Test document processing
-curl -X POST http://localhost:8000/ai-service/internal/process-document-data \
-  -H "Content-Type: application/json" \
-  -d '{"name": "test", "uuid": "123", "url": "s3://bucket/file.pdf", "type": "PDF", "trainingStatus": "pending"}'
+docs/RAG_FUSSA_API.postman_collection.json
 ```
+
+Import this collection into Postman for easy API testing.
+
+## 📝 Debugging
+
+### Debug Mode Features
+- **Console Output**: Real-time debug information
+- **File Logging**: Timestamped debug files in `logs/` directory
+- **Request Tracking**: Full request/response lifecycle logging
+- **Performance Metrics**: Response times and processing durations
+
+### Debug Output Example
+```
+🚀 Starting RAG FUSSA API
+📝 Debug file: logs/2025-10-01_11-30-45_debug.log
+Processing AI query
+  conversation_id: null
+  question: What is AI?
+Using rephrased query
+  original_query: What is AI?
+  rephrased_query: What is artificial intelligence?
+Content retrieved
+  total_results: 5
+Query classified
+  query_type: KNOWLEDGE_QUESTION
+```
+
+## 🔄 Conversation Management
+
+The API supports both new and continuing conversations:
+
+- **New Conversation**: `conversationId: null` or `conversationId: ""`
+- **Continuing Conversation**: `conversationId: "resp_abc123..."`
+- **Context Preservation**: Full conversation history maintained
+- **Thread Continuity**: OpenAI thread IDs for seamless context
+
+## 📈 Performance
+
+- **Async Processing**: Non-blocking document processing
+- **Vector Search**: Optimized semantic retrieval
+- **Caching**: Intelligent response caching
+- **Rate Limiting**: Built-in protection against abuse
+
+## 🚀 Production Deployment
+
+1. **Environment Setup**: Configure all required environment variables
+2. **Security**: Ensure proper API key management
+3. **Monitoring**: Enable health checks and logging
+4. **Scaling**: Configure load balancing and horizontal scaling
+5. **Backup**: Set up data backup and recovery procedures
 
 ## 🤝 Contributing
 
@@ -274,26 +297,14 @@ curl -X POST http://localhost:8000/ai-service/internal/process-document-data \
 
 [Add your license information here]
 
-## 🆘 Troubleshooting
-
-### Common Issues
-
-1. **Import Errors**: Ensure virtual environment is activated and dependencies are installed
-2. **API Key Errors**: Verify all required environment variables are set
-3. **Pinecone Connection**: Check network connectivity and API key validity
-4. **S3 Access**: Verify AWS credentials and bucket permissions
-
-### Logs Location
-- Development: Console output
-- Production: `logs/` directory
-
-### Health Check Failures
-Check individual service health at `/health` endpoint for detailed dependency status.
-
-## 📞 Support
+## 🆘 Support
 
 For issues and questions:
-- Check the logs first
-- Review health check status
-- Verify environment configuration
-- [Add your support contact information]
+- Check the health endpoints for system status
+- Review debug logs for detailed error information
+- Consult the Postman collection for API examples
+- Contact the development team for assistance
+
+---
+
+**RAG FUSSA API** - Intelligent Document Processing and Conversation Management

@@ -27,10 +27,16 @@ class DocumentInfo(BaseModel):
     type: str = Field(..., description="Type of the document (PDF, IMAGE, AUDIO, etc.)")
 
 
+class ConversationMessage(BaseModel):
+    timestamp: str = Field(..., description="ISO timestamp of the message")
+    question: str = Field(..., description="User's question")
+    answer: str = Field(..., description="AI's response")
+
 class AskQueryRAGRequest(BaseModel):
-    conversationId: str = Field(..., description="Unique conversation identifier")
+    conversationId: Optional[str] = Field(None, description="Unique conversation identifier (null for new chat)")
     type: str = Field(..., description="Message type: TEXT or DOCUMENT")
     question: str = Field(..., description="Question to ask the RAG system")
+    conversationHistory: Optional[List[ConversationMessage]] = Field(default=[], description="Previous conversation messages")
     documents: Optional[List[DocumentInfo]] = Field(None, description="Additional documents (for DOCUMENT type)")
 
 

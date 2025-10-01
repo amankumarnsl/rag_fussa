@@ -19,10 +19,8 @@ BACKEND_BASE_URL=192.168.68.72
 BACKEND_PORT=4504
 BACKEND_ENDPOINT_PATH=/upload/internal/update-document-entry
 
-# Logging Configuration
-LOG_LEVEL=INFO
-LOG_FILE=logs/rag_fussa.log
-ENVIRONMENT=development
+# Debug Print (true for console prints, false for silence)
+DEBUG_PRINT=false
 
 # CORS Configuration (comma-separated)
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
@@ -30,12 +28,3 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 # File Processing
 TEMP_UPLOAD_DIR=./temp_uploads
 
-# Redis Configuration
-REDIS_URL=redis://localhost:6379/0
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-
-# Celery Configuration
-CELERY_BROKER_URL=redis://localhost:6379/0
-CELERY_RESULT_BACKEND=redis://localhost:6379/0

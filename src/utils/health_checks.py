@@ -5,9 +5,31 @@ import time
 import asyncio
 from typing import Dict, Any, Optional
 from enum import Enum
-from .logging_config import get_logger
+# Simple debug print function (same as main.py)
+import os
+DEBUG_PRINT = os.getenv("DEBUG_PRINT", "false").lower() == "true"
 
-logger = get_logger("health_checks")
+def debug_print(message, **kwargs):
+    if DEBUG_PRINT:
+        # Print to console
+        print(message)
+        for key, value in kwargs.items():
+            print(f"  {key}: {value}")
+        
+        # Also write to debug file (if available from main.py)
+        try:
+            import sys
+            main_module = sys.modules.get('src.main')
+            if main_module and hasattr(main_module, 'debug_file') and main_module.debug_file:
+                main_module.debug_file.write(f"{message}\n")
+                main_module.debug_file.flush()
+                for key, value in kwargs.items():
+                    main_module.debug_file.write(f"  {key}: {value}\n")
+                    main_module.debug_file.flush()
+        except:
+            pass  # Ignore if debug_file not available
+
+logger = None  # No logging anymore
 
 class HealthStatus(str, Enum):
     HEALTHY = "healthy"
@@ -446,15 +468,13 @@ async def check_all_dependencies() -> Dict[str, HealthCheckResult]:
         checker.check_pinecone(),
         checker.check_aws_s3(),
         checker.check_backend_api(),
-        checker.check_redis(),
-        checker.check_celery(),
         checker.check_file_system(),
         return_exceptions=True
     )
     
     # Handle exceptions
     dependency_results = {}
-    check_names = ["openai", "pinecone", "aws_s3", "backend_api", "redis", "celery", "file_system"]
+    check_names = ["openai", "pinecone", "aws_s3", "backend_api", "file_system"]
     
     for i, result in enumerate(results):
         service_name = check_names[i]

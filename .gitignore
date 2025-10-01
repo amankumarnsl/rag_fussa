@@ -241,7 +241,9 @@ $RECYCLE.BIN/
 .env.development
 
 # Log files
-logs/
+# Debug logs (datetime-based debug files)
+logs/*
+!logs/.gitkeep
 *.log
 *.log.*
 
@@ -361,6 +363,11 @@ yarn.lock
 docs/_build/
 docs/build/
 site/
+# Keep docs folder structure but ignore build artifacts
+docs/*
+!docs/.gitkeep
+!docs/*.md
+!docs/*.json
 
 # Coverage reports
 htmlcov/

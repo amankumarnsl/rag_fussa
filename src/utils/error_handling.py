@@ -13,9 +13,31 @@ from tenacity import (
     before_sleep_log,
     after_log
 )
-from .logging_config import get_logger
+# Simple debug print function (same as main.py)
+import os
+DEBUG_PRINT = os.getenv("DEBUG_PRINT", "false").lower() == "true"
 
-logger = get_logger("error_handling")
+def debug_print(message, **kwargs):
+    if DEBUG_PRINT:
+        # Print to console
+        print(message)
+        for key, value in kwargs.items():
+            print(f"  {key}: {value}")
+        
+        # Also write to debug file (if available from main.py)
+        try:
+            import sys
+            main_module = sys.modules.get('src.main')
+            if main_module and hasattr(main_module, 'debug_file') and main_module.debug_file:
+                main_module.debug_file.write(f"{message}\n")
+                main_module.debug_file.flush()
+                for key, value in kwargs.items():
+                    main_module.debug_file.write(f"  {key}: {value}\n")
+                    main_module.debug_file.flush()
+        except:
+            pass  # Ignore if debug_file not available
+
+logger = None  # No logging anymore
 
 class ErrorType(str, Enum):
     TRANSIENT = "transient"  # Temporary issues that might resolve

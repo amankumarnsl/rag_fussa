@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import boto3
 import openai
 import requests
@@ -10,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import PyPDF2
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from .config.config import *
 from .config.schemas import *
@@ -663,6 +664,145 @@ async def fetch_rag(request: RAGQueryRequest):
         raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")
 
 
+def filter_conversation_history(conversation_history: List[Dict]) -> List[Dict]:
+    """Filter conversation history to keep all questions but only the last answer for optimization"""
+    if not conversation_history:
+        return []
+    
+    filtered_history = []
+    
+    for i, msg in enumerate(conversation_history):
+        # Check if this is the last message
+        is_last = (i == len(conversation_history) - 1)
+        
+        if is_last:
+            # Keep both question and answer for the last message
+            filtered_history.append({
+                "question": msg.get("question", ""),
+                "answer": msg.get("answer", "")
+            })
+        else:
+            # Keep only question for older messages
+            filtered_history.append({
+                "question": msg.get("question", "")
+            })
+    
+    logger.info("Conversation history filtered", 
+                original_count=len(conversation_history), 
+                filtered_count=len(filtered_history),
+                answers_kept=1 if conversation_history else 0)
+    
+    return filtered_history
+
+
+async def analyze_query_and_classify(request_data: dict) -> Dict[str, str]:
+    """Combined function: Rephrase query + Classify type in ONE API call using gpt-5-nano"""
+    try:
+        import openai
+        
+        # Get conversation history from request and filter it
+        conversation_history = request_data.get("conversationHistory", [])
+        filtered_history = filter_conversation_history(conversation_history)
+        query = request_data.get("question", "")
+        
+        logger.info("Starting combined query analysis", query=query, history_count=len(filtered_history))
+        
+        # Quick check for obvious greetings - no need to rephrase
+        query_lower = query.lower().strip()
+        if query_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'thanks', 'thank you', 'bye', 'goodbye']:
+            return {
+                "rephrasedQuery": query,
+                "classification": "GENERAL_CONVERSATION"
+            }
+        
+        # Build conversation context
+        context = ""
+        if filtered_history:
+            context_parts = []
+            for msg in filtered_history:
+                context_parts.append(f"User: {msg['question']}")
+                if msg.get('answer'):  # Only last message will have answer
+                    context_parts.append(f"Assistant: {msg['answer'][:200]}...")
+            context = "\n".join(context_parts)
+        
+        # Combined prompt for both rephrasing and classification
+        combined_prompt = f"""You have TWO tasks to perform on the user's query:
+
+CONVERSATION CONTEXT:
+{context if context else "No previous conversation"}
+
+IMPORTANT NOTE: For optimization, only the most recent answer is included in conversation history. All previous questions were answered, but those answers are excluded to save tokens. This is an ongoing conversation with full context maintained.
+
+CURRENT USER QUERY: {query}
+
+TASK 1 - REPHRASE QUERY (if needed):
+- If the query is a follow-up question referencing previous conversation, rephrase it to be standalone
+- Include necessary context from conversation history
+- If query is already clear and standalone, keep it as is
+- Examples:
+  * "What about that?" → "What about [specific topic from context]?"
+  * "Can you explain the second point?" → "Can you explain [specific point from context]?"
+  * "Tell me more" → "Tell me more about [topic from context]"
+
+TASK 2 - CLASSIFY QUERY TYPE:
+Determine if this is GENERAL_CONVERSATION or KNOWLEDGE_QUESTION
+
+GENERAL_CONVERSATION:
+- Greetings, pleasantries, thank you, goodbye
+- Questions about our current conversation ("What did I ask earlier?", "What's my name?")
+- Personal opinions, advice, general chat
+- Relationship advice, life coaching, generic facts NOT in knowledge base
+
+KNOWLEDGE_QUESTION:
+- Questions that need specific information from uploaded documents
+- Technical queries, factual questions requiring knowledge base
+- Document-specific questions
+
+Return your response in this EXACT JSON format (no other text):
+{{
+  "rephrasedQuery": "the rephrased query or original if no rephrasing needed",
+  "classification": "GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"
+}}"""
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a query analyzer. Analyze and return results in JSON format."},
+                {"role": "user", "content": combined_prompt}
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=150,
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content.strip())
+        
+        rephrased_query = result.get("rephrasedQuery", query)
+        classification = result.get("classification", "KNOWLEDGE_QUESTION")
+        
+        print(f"🔍 DEBUG: Combined Analysis Result: {result}")
+        print(f"🔍 DEBUG: Final Rephrased Query: {rephrased_query}")
+        print(f"🔍 DEBUG: Final Classification: {classification}")
+        
+        logger.info("Combined query analysis completed", 
+                   original_query=query, 
+                   rephrased_query=rephrased_query, 
+                   classification=classification)
+        
+        return {
+            "rephrasedQuery": rephrased_query,
+            "classification": classification
+        }
+        
+    except Exception as e:
+        debug_print("Combined query analysis error", operation="analyze_query_and_classify", error=str(e), query=query)
+        # Fallback: return original query and default to knowledge question
+        return {
+            "rephrasedQuery": query,
+            "classification": "KNOWLEDGE_QUESTION"
+        }
+
+
 async def generate_conversation_title(first_message: str) -> str:
     """Generate conversation title using OpenAI - handles all cases"""
     try:
@@ -710,173 +850,39 @@ Return ONLY the title without quotes, nothing else."""
 
 
 # Note: save_conversation_locally removed - conversations now handled by backend
+# Note: rephrase_followup_query and classify_query_type removed - now combined in analyze_query_and_classify
 
 
-async def rephrase_followup_query(request_data: dict) -> str:
-    """Rephrase follow-up queries using conversation context"""
+async def generate_general_conversation_answer(request_data: dict) -> Dict[str, str]:
+    """Generate general conversation response using gpt-5-nano with filtered conversation history"""
     try:
         import openai
         
-        # Get conversation history from request
+        # Get and filter conversation history
         conversation_history = request_data.get("conversationHistory", [])
-        query = request_data.get("question", "")
-        
-        if not conversation_history:
-            return query  # No history, return original query
-        
-        # Quick check for obvious non-follow-ups
-        query_lower = query.lower().strip()
-        if query_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'thanks', 'thank you', 'bye', 'goodbye']:
-            return query  # Greetings, no rephrasing needed
-        
-        # Check if query is clearly standalone (longer than 10 words, contains specific topics)
-        if len(query.split()) > 10 and any(word in query_lower for word in ['maharashtra', 'delhi', 'mumbai', 'friend', 'girlfriend', 'boyfriend', 'school', 'college', 'work', 'job']):
-            return query  # Standalone questions, no rephrasing needed
-        
-        # Build conversation context
-        context_parts = []
-        for msg in conversation_history:  # Use all conversation history
-            context_parts.append(f"User: {msg['question']}")
-            context_parts.append(f"Assistant: {msg['answer'][:200]}...")
-        context = "\n".join(context_parts)
-        
-        rephrase_prompt = f"""You are a query rephraser. Analyze if the current query is a follow-up to previous conversation and rephrase it with full context.
-
-CONVERSATION HISTORY:
-{context}
-
-CURRENT USER QUERY: {query}
-
-REPHRASING RULES:
-- ONLY rephrase if the query is clearly a follow-up to the previous conversation
-- Follow-up indicators: "why not", "why", "how", "what about", "tell me more", "explain that", "so you're saying", "is it okay", "right?"
-- If the query is standalone, personal, or about a different topic, return it as-is
-- If the query is a greeting or personal statement, return it as-is
-
-EXAMPLES:
-- "why not" + context about constitution → "why not can i kill someone according to constitution"
-- "tell me more" + context about rights → "tell me more about constitutional rights to life"
-- "explain that" + context about Article 21 → "explain Article 21 of the constitution"
-- "hello" → "hello" (no change needed)
-- "i purposed her, is it okay" → "i purposed her, is it okay" (personal question, no change)
-- "tell me about maharashtra" → "tell me about maharashtra" (standalone question, no change)
-- "what's my name" → "what's my name" (personal question, no change)
-
-IMPORTANT: Only expand if it's clearly a follow-up to the previous knowledge-based conversation. Don't force connections.
-
-Return ONLY the rephrased query, nothing else."""
-
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a query rephraser. Return only the rephrased query."},
-                {"role": "user", "content": rephrase_prompt}
-            ],
-            max_tokens=100,
-            temperature=0.1
-        )
-        
-        rephrased_query = response.choices[0].message.content.strip()
-        logger.info("Query rephrased", original_query=query, rephrased_query=rephrased_query)
-        
-        return rephrased_query
-        
-    except Exception as e:
-        debug_print("Rephrase followup query error", operation="rephrase_followup_query", error=str(e), original_query=query)
-        return query
-
-
-async def classify_query_type(request_data: dict) -> str:
-    """Classify if query is general conversation or knowledge question using GPT-4o-mini with full conversation context"""
-    try:
-        import openai
-        
-        logger.info("classify_query_type: Starting classification")
-        
-        # Get conversation history from request
-        conversation_history = request_data.get("conversationHistory", [])
-        query = request_data.get("question", "")
-        
-        logger.info("classify_query_type: Got request data", query=query, history_count=len(conversation_history))
-        
-        # Build full conversation context
-        context = ""
-        if conversation_history:
-            context_parts = []
-            for msg in conversation_history:  # Use all conversation history
-                context_parts.append(f"User: {msg['question']}")
-                context_parts.append(f"Assistant: {msg['answer'][:150]}...")  # Truncate for brevity
-            context = "\n".join(context_parts)
-        
-        classification_prompt = f"""You are a query classifier. Analyze the user's query and determine if it requires knowledge base search or is general conversation.
-
-FULL CONVERSATION HISTORY:
-{context if context else "No previous conversation"}
-
-CURRENT USER QUERY: {query}
-
-CLASSIFICATION RULES:
-- GENERAL_CONVERSATION: 
-  * Greetings (hello, hi, hey, good morning, thanks, how are you, nice to meet you)
-  * Personal statements (my name is, I am, I live in)
-  * Conversation about our chat (what's my name, what did I say, what did you tell me)
-  * Follow-ups to general conversation (tell me more about yourself, what else can you do)
-  * Confirmations (yes, no, okay, sure)
-  * Goodbyes (bye, see you later)
-
-- KNOWLEDGE_QUESTION:
-  * Factual questions (what is, who is, explain, how does, when, where, why)
-  * Questions about specific topics that require external knowledge
-  * Follow-ups to knowledge questions (why not, tell me more about X, explain that concept)
-  * Questions that could be answered from uploaded documents/videos
-
-IMPORTANT CONTEXT ANALYSIS:
-- If the query is a follow-up like "why not", "tell me more", "explain that" - check if the previous conversation was about a knowledge topic
-- If previous conversation was about constitution, rights, laws, facts → classify as KNOWLEDGE_QUESTION
-- If previous conversation was general chat → classify as GENERAL_CONVERSATION
-- If no clear context, classify based on the query itself
-
-Examples:
-- "why not" after discussing constitution → KNOWLEDGE_QUESTION
-- "why not" after saying hello → GENERAL_CONVERSATION  
-- "tell me more" after discussing rights → KNOWLEDGE_QUESTION
-- "tell me more" after general chat → GENERAL_CONVERSATION
-
-Respond with ONLY one word: GENERAL_CONVERSATION or KNOWLEDGE_QUESTION"""
-
-        logger.info("classify_query_type: About to call OpenAI API")
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a query classifier. Respond with only 'GENERAL_CONVERSATION' or 'KNOWLEDGE_QUESTION'."},
-                {"role": "user", "content": classification_prompt}
-            ],
-            max_tokens=10,
-            temperature=0.1
-        )
-        
-        logger.info("classify_query_type: OpenAI API call completed")
-        classification = response.choices[0].message.content.strip()
-        logger.info("classify_query_type: Classification result", query=query, classification=classification)
-        
-        return classification if classification in ["GENERAL_CONVERSATION", "KNOWLEDGE_QUESTION"] else "KNOWLEDGE_QUESTION"
-        
-    except Exception as e:
-        debug_print("Classify query type error", operation="classify_query_type", error=str(e), query=query)
-        return "KNOWLEDGE_QUESTION"  # Default to RAG if classification fails
-
-
-async def generate_general_conversation_answer(request_data: dict) -> str:
-    """Generate general conversation response with conversation context support using OpenAI responses.create()"""
-    try:
-        import openai
+        filtered_history = filter_conversation_history(conversation_history)
         
         # Get conversation ID from request (null for new chat)
         previous_response_id = request_data.get("conversationId")
         query = request_data.get("question", "")
         
+        # Build conversation context
+        context = ""
+        if filtered_history:
+            context_parts = []
+            for msg in filtered_history:
+                context_parts.append(f"User: {msg['question']}")
+                if msg.get('answer'):  # Only last message will have answer
+                    context_parts.append(f"Assistant: {msg['answer']}")
+            context = "\n".join(context_parts)
+        
         # Create conversational input
-        input_message = f"""User says: {query}
+        input_message = f"""CONVERSATION CONTEXT:
+{context if context else "No previous conversation"}
+
+IMPORTANT NOTE: For optimization, only the most recent answer is included in conversation history. All previous questions were answered, but those answers are excluded to save tokens. This is an ongoing conversation with full context maintained.
+
+CURRENT USER QUERY: {query}
 
 You are handling general conversation. Decide between three behaviors and output ONLY the final message text (no labels):
 
@@ -912,7 +918,7 @@ Examples:
 - User: "hi can you help me to manage my break up with my gf?" → "I'm sorry, but I can't provide general personal advice. I only answer using information from your uploaded knowledge base. You can add relevant documents and ask again."
 - User: "who is prime minister of india" → "Sorry, I can't answer general questions. I only respond using your uploaded knowledge base."
 """
-
+        
         if previous_response_id:
             # Continue existing conversation
             logger.info("Continuing general conversation")
@@ -962,9 +968,16 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         is_first_message = request.conversationId is None or request.conversationId == ""
         conversation_title = None
         
+        print(f"🔍 DEBUG: Is First Message: {is_first_message}")
+        print(f"🔍 DEBUG: Conversation ID from request: {request.conversationId}")
+        
         if is_first_message:
+            print(f"🔍 DEBUG: Generating conversation title for: {request.question}")
             logger.info("First message detected", conversation_id=request.conversationId)
             conversation_title = await generate_conversation_title(request.question)
+            print(f"🔍 DEBUG: Generated Title: {conversation_title}")
+        else:
+            print(f"🔍 DEBUG: Not a first message, skipping title generation")
         
         # Handle DOCUMENT type messages (placeholder for now)
         if request.type == "DOCUMENT":
@@ -973,14 +986,27 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # TODO: Process documents and add to context
             # For now, just process the message normally
         
-        # Step 1: Rephrase query using conversation context
+        # Step 1: Combined query analysis (rephrase + classify) in ONE API call
         request_data = {
             "question": request.question,
             "conversationId": request.conversationId,
             "conversationHistory": request.conversationHistory
         }
-        rephrased_query = await rephrase_followup_query(request_data)
-        debug_print("Using rephrased query", original_query=request.question, rephrased_query=rephrased_query)
+        
+        debug_print("Starting combined query analysis", conversation_id=request.conversationId)
+        analysis_result = await analyze_query_and_classify(request_data)
+        rephrased_query = analysis_result["rephrasedQuery"]
+        query_type = analysis_result["classification"]
+        
+        print(f"🔍 DEBUG: Original Query: {request.question}")
+        print(f"🔍 DEBUG: Rephrased Query: {rephrased_query}")
+        print(f"🔍 DEBUG: Classification: {query_type}")
+        print(f"🔍 DEBUG: Conversation History Length: {len(request.conversationHistory)}")
+        
+        debug_print("Combined analysis completed", 
+                   original_query=request.question, 
+                   rephrased_query=rephrased_query, 
+                   query_type=query_type)
         
         # Step 2: Retrieve relevant content using rephrased query
         rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K)
@@ -991,27 +1017,26 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         retrieved_content = rag_result["results"]
         total_retrieved = rag_result["total_retrieved"]
         
-        debug_print("Content retrieved", conversation_id=request.conversationId, total_retrieved=total_retrieved)
+        print(f"🔍 DEBUG: RAG Success: {rag_result['success']}")
+        print(f"🔍 DEBUG: Total Retrieved: {total_retrieved}")
+        print(f"🔍 DEBUG: Retrieved Content Preview: {retrieved_content[0]['content'][:100] if retrieved_content else 'No content'}")
         
-        # Step 3: Classify query type using GPT-4o-mini with full conversation context
-        debug_print("Starting query classification", conversation_id=request.conversationId)
-        try:
-            query_type = await classify_query_type(request_data)
-            debug_print("Query classification completed", conversation_id=request.conversationId, query_type=query_type)
-        except Exception as e:
-            debug_print("Query classification failed", conversation_id=request.conversationId, error=str(e))
-            raise
+        debug_print("Content retrieved", conversation_id=request.conversationId, total_retrieved=total_retrieved)
         
         if query_type == "GENERAL_CONVERSATION":
             # Handle general conversation without RAG
             debug_print("General conversation detected", conversation_id=request.conversationId)
             try:
+                print(f"🔍 DEBUG: Generating GENERAL conversation answer")
                 logger.info("Starting general conversation answer generation", conversation_id=request.conversationId)
                 result = await generate_general_conversation_answer(request_data)
                 logger.info("General conversation answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
+                print(f"🔍 DEBUG: General Answer Generated: {ai_answer[:100]}...")
+                print(f"🔍 DEBUG: New Conversation ID: {new_conversation_id}")
             except Exception as e:
+                print(f"🔍 DEBUG: ERROR in General Conversation: {str(e)}")
                 logger.error("General conversation answer generation failed", conversation_id=request.conversationId, error=str(e))
                 raise
             
@@ -1021,7 +1046,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             return AskQueryRAGResponse(
                 success=True,
                 message="General conversation response",
-                conversationId=new_conversation_id,
+                conversationId=new_conversation_id or "new_conversation",
                 answer=ai_answer,
                 retrieved_content=[],
                 total_retrieved=0,
@@ -1031,12 +1056,16 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # Handle knowledge question with RAG using rephrased query
             logger.info("Knowledge question detected", conversation_id=request.conversationId)
             try:
+                print(f"🔍 DEBUG: Generating KNOWLEDGE answer with {len(retrieved_content)} content pieces")
                 logger.info("Starting knowledge question answer generation", conversation_id=request.conversationId)
                 result = await generate_conversational_ai_answer(request_data, retrieved_content)
                 logger.info("Knowledge question answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
+                print(f"🔍 DEBUG: Knowledge Answer Generated: {ai_answer[:100]}...")
+                print(f"🔍 DEBUG: New Conversation ID: {new_conversation_id}")
             except Exception as e:
+                print(f"🔍 DEBUG: ERROR in Knowledge Generation: {str(e)}")
                 logger.error("Knowledge question answer generation failed", conversation_id=request.conversationId, error=str(e))
                 raise
         
@@ -1056,7 +1085,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         return AskQueryRAGResponse(
             success=True,
             message="AI answer generated successfully",
-            conversationId=new_conversation_id,
+            conversationId=new_conversation_id or "new_conversation",
             answer=ai_answer,
             retrieved_content=retrieved_content,
             total_retrieved=total_retrieved,
@@ -1084,7 +1113,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             return AskQueryRAGResponse(
                 success=False,
                 message=f"AI processing failed, but retrieved content available: {str(e)}",
-                conversationId=request.conversationId,
+                conversationId=request.conversationId or "new_conversation",
                 answer=error_answer,
                 retrieved_content=retrieved_content,
                 total_retrieved=len(retrieved_content),
@@ -1095,11 +1124,14 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
-async def generate_conversational_ai_answer(request_data: dict, retrieved_content: List[Dict[str, Any]]) -> str:
-    """Generate conversational AI answer using OpenAI responses.create() with conversation tracking"""
+async def generate_conversational_ai_answer(request_data: dict, retrieved_content: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Generate knowledge-based AI answer using gpt-5-mini with filtered conversation history"""
     try:
         import openai
         
+        # Get and filter conversation history
+        conversation_history = request_data.get("conversationHistory", [])
+        filtered_history = filter_conversation_history(conversation_history)
         query = request_data.get("question", "")
         
         # Handle case where no content was retrieved
@@ -1113,8 +1145,23 @@ async def generate_conversational_ai_answer(request_data: dict, retrieved_conten
         
         context = "\n\n---\n\n".join(context_parts)
         
+        # Build conversation context
+        conversation_context = ""
+        if filtered_history:
+            context_parts_conv = []
+            for msg in filtered_history:
+                context_parts_conv.append(f"User: {msg['question']}")
+                if msg.get('answer'):  # Only last message will have answer
+                    context_parts_conv.append(f"Assistant: {msg['answer'][:200]}...")
+            conversation_context = "\n".join(context_parts_conv)
+        
         # Create input with improved relevance detection
-        input_message = f"""You are an expert assistant that answers questions using the provided context information. Follow these guidelines:
+        input_message = f"""CONVERSATION HISTORY:
+{conversation_context if conversation_context else "No previous conversation"}
+
+IMPORTANT NOTE: For optimization, only the most recent answer is included in conversation history. All previous questions were answered, but those answers are excluded to save tokens. This is an ongoing conversation with full context maintained.
+
+You are an expert assistant that answers questions using the provided context information. Follow these guidelines:
 
 RELEVANCE GUIDELINES:
 - Analyze the context to find any information that relates to the user's question
@@ -1156,32 +1203,44 @@ Provide a clear, natural answer based on the available information."""
         # Get conversation ID from request (null for new chat)
         previous_response_id = request_data.get("conversationId")
         
-        if previous_response_id:
-            # Continue existing conversation
-            logger.info("Continuing conversation", previous_response_id=previous_response_id)
-            response = openai.responses.create(
-                model="gpt-4o",
-                input=input_message,
-                previous_response_id=previous_response_id,  # Continue conversation
-                max_output_tokens=1200,
-                temperature=0.3  # Balanced temperature for better relevance detection
-            )
-        else:
-            # Start new conversation
-            logger.info("Starting new conversation")
-            response = openai.responses.create(
-                model="gpt-4o",
-                input=input_message,
-                max_output_tokens=1200,
-                temperature=0.3  # Balanced temperature for better relevance detection
-            )
+        print(f"🔍 DEBUG: Previous Response ID: {previous_response_id}")
+        print(f"🔍 DEBUG: About to call OpenAI with model: gpt-5-mini")
         
-        # Return response ID for future conversation continuity
-        # Backend will handle storing this
-        ai_answer = response.output_text.strip()
-        
-        logger.info("Generated conversational response", response_id=response.id)
-        return {"answer": ai_answer, "conversationId": response.id}
+        try:
+            if previous_response_id:
+                # Continue existing conversation
+                logger.info("Continuing conversation", previous_response_id=previous_response_id)
+                response = openai.responses.create(
+                    model="gpt-4o-mini",
+                    input=input_message,
+                    previous_response_id=previous_response_id,  # Continue conversation
+                    max_output_tokens=1200,
+                    temperature=0.3  # Balanced temperature for better relevance detection
+                )
+            else:
+                # Start new conversation
+                logger.info("Starting new conversation")
+                response = openai.responses.create(
+                    model="gpt-4o-mini",
+                    input=input_message,
+                    max_output_tokens=1200,
+                    temperature=0.3  # Balanced temperature for better relevance detection
+                )
+            
+            print(f"🔍 DEBUG: OpenAI Response ID: {response.id}")
+            print(f"🔍 DEBUG: OpenAI Response Text Length: {len(response.output_text)}")
+            
+            # Return response ID for future conversation continuity
+            # Backend will handle storing this
+            ai_answer = response.output_text.strip()
+            
+            logger.info("Generated conversational response", response_id=response.id)
+            return {"answer": ai_answer, "conversationId": response.id}
+            
+        except Exception as openai_error:
+            print(f"🔍 DEBUG: OpenAI API Error: {str(openai_error)}")
+            print(f"🔍 DEBUG: OpenAI Error Type: {type(openai_error)}")
+            raise openai_error
         
     except Exception as e:
         debug_print("Generate conversational AI answer error", operation="generate_conversational_ai_answer", error=str(e))

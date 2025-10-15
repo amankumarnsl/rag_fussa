@@ -553,13 +553,17 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         logger.info("fetch_rag_internal: Starting RAG fetch", query=query, top_k=top_k)
         
         # Generate query embedding directly
+        embedding_start = time.time()
         logger.info("fetch_rag_internal: Generating query embedding")
         query_embedding = await get_embeddings([query])
+        embedding_time = (time.time() - embedding_start) * 1000
+        print(f"⏱️ TIMING: Embedding Generation: {embedding_time:.2f}ms")
         logger.info("fetch_rag_internal: Query embedding generated")
         
         all_results = []
         
         # Search across all indexes
+        search_start = time.time()
         logger.info("fetch_rag_internal: Starting search across indexes")
         indexes = [
             ("pdf", pdf_index),
@@ -629,6 +633,9 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         
         # Limit to requested top_k
         final_results = all_results[:top_k]
+        
+        search_time = (time.time() - search_start) * 1000
+        print(f"⏱️ TIMING: Pinecone Search: {search_time:.2f}ms")
         
         return {
             "success": True,
@@ -923,7 +930,7 @@ Examples:
             # Continue existing conversation
             logger.info("Continuing general conversation")
             response = openai.responses.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 input=input_message,
                 previous_response_id=previous_response_id,
                 max_output_tokens=300,  # Shorter for general conversation
@@ -933,7 +940,7 @@ Examples:
             # Start new conversation
             logger.info("Starting new general conversation")
             response = openai.responses.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 input=input_message,
                 max_output_tokens=300,
                 temperature=0.2
@@ -993,11 +1000,15 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             "conversationHistory": request.conversationHistory
         }
         
+        # Step 1: Combined query analysis timing
+        analysis_start = time.time()
         debug_print("Starting combined query analysis", conversation_id=request.conversationId)
         analysis_result = await analyze_query_and_classify(request_data)
         rephrased_query = analysis_result["rephrasedQuery"]
         query_type = analysis_result["classification"]
+        analysis_time = (time.time() - analysis_start) * 1000
         
+        print(f"⏱️ TIMING: Combined Analysis: {analysis_time:.2f}ms")
         print(f"🔍 DEBUG: Original Query: {request.question}")
         print(f"🔍 DEBUG: Rephrased Query: {rephrased_query}")
         print(f"🔍 DEBUG: Classification: {query_type}")
@@ -1008,8 +1019,10 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                    rephrased_query=rephrased_query, 
                    query_type=query_type)
         
-        # Step 2: Retrieve relevant content using rephrased query
+        # Step 2: RAG retrieval timing
+        rag_start = time.time()
         rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K)
+        rag_time = (time.time() - rag_start) * 1000
         
         if not rag_result["success"]:
             raise HTTPException(status_code=500, detail=f"Content retrieval failed: {rag_result['error']}")
@@ -1017,6 +1030,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         retrieved_content = rag_result["results"]
         total_retrieved = rag_result["total_retrieved"]
         
+        print(f"⏱️ TIMING: RAG Retrieval: {rag_time:.2f}ms")
         print(f"🔍 DEBUG: RAG Success: {rag_result['success']}")
         print(f"🔍 DEBUG: Total Retrieved: {total_retrieved}")
         print(f"🔍 DEBUG: Retrieved Content Preview: {retrieved_content[0]['content'][:100] if retrieved_content else 'No content'}")
@@ -1027,12 +1041,16 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # Handle general conversation without RAG
             debug_print("General conversation detected", conversation_id=request.conversationId)
             try:
+                # Step 3a: General conversation timing
+                general_start = time.time()
                 print(f"🔍 DEBUG: Generating GENERAL conversation answer")
                 logger.info("Starting general conversation answer generation", conversation_id=request.conversationId)
                 result = await generate_general_conversation_answer(request_data)
+                general_time = (time.time() - general_start) * 1000
                 logger.info("General conversation answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
+                print(f"⏱️ TIMING: General Answer Generation: {general_time:.2f}ms")
                 print(f"🔍 DEBUG: General Answer Generated: {ai_answer[:100]}...")
                 print(f"🔍 DEBUG: New Conversation ID: {new_conversation_id}")
             except Exception as e:
@@ -1056,12 +1074,16 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # Handle knowledge question with RAG using rephrased query
             logger.info("Knowledge question detected", conversation_id=request.conversationId)
             try:
+                # Step 3b: Knowledge answer timing
+                knowledge_start = time.time()
                 print(f"🔍 DEBUG: Generating KNOWLEDGE answer with {len(retrieved_content)} content pieces")
                 logger.info("Starting knowledge question answer generation", conversation_id=request.conversationId)
                 result = await generate_conversational_ai_answer(request_data, retrieved_content)
+                knowledge_time = (time.time() - knowledge_start) * 1000
                 logger.info("Knowledge question answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
+                print(f"⏱️ TIMING: Knowledge Answer Generation: {knowledge_time:.2f}ms")
                 print(f"🔍 DEBUG: Knowledge Answer Generated: {ai_answer[:100]}...")
                 print(f"🔍 DEBUG: New Conversation ID: {new_conversation_id}")
             except Exception as e:
@@ -1073,6 +1095,16 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         
         # Log performance metrics
         duration_ms = (time.time() - start_time) * 1000
+        
+        print(f"⏱️ TIMING: TOTAL REQUEST TIME: {duration_ms:.2f}ms")
+        print(f"⏱️ TIMING BREAKDOWN:")
+        print(f"   - Combined Analysis: {analysis_time:.2f}ms")
+        print(f"   - RAG Retrieval: {rag_time:.2f}ms")
+        if query_type == "GENERAL_CONVERSATION":
+            print(f"   - General Answer: {general_time:.2f}ms")
+        else:
+            print(f"   - Knowledge Answer: {knowledge_time:.2f}ms")
+        
         debug_print("Performance metric", metric="ask_query_duration", value=f"{duration_ms}ms", conversation_id=request.conversationId, query_type=query_type, total_retrieved=total_retrieved)
         
         logger.info("AI query completed successfully", 

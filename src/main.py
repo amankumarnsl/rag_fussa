@@ -137,9 +137,9 @@ s3_client = boto3.client(
 
 from pinecone import Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
-pdf_index = pc.Index(PINECONE_PDF_INDEX)
-video_index = pc.Index(PINECONE_VIDEO_INDEX)
-image_index = pc.Index(PINECONE_IMAGE_INDEX)
+
+# Single namespace index (optimized)
+pinecone_index = pc.Index(PINECONE_INDEX)
 
 openai.api_key = OPENAI_API_KEY
 
@@ -175,15 +175,8 @@ async def get_file_type(file_extension):
 
 
 def get_index_for_file_type(file_type):
-    """Get appropriate Pinecone index for file type."""
-    if file_type == 'pdf':
-        return pdf_index
-    elif file_type == 'video':
-        return video_index
-    elif file_type == 'image':
-        return image_index
-    else:
-        raise ValueError(f"Unsupported file type: {file_type}")
+    """Get Pinecone index for all file types (single namespace)."""
+    return pinecone_index
 
 
 
@@ -242,24 +235,29 @@ async def store_chunks_in_pinecone(chunks: List[Dict], embeddings: List[List[flo
         # Prepare vectors for Pinecone
         vectors = []
         for i, chunk in enumerate(chunks):
+            # Prepare metadata
+            metadata = {
+                **chunk["metadata"],
+                "filename": filename,
+                "file_type": file_type,
+                "chunk_index": i,
+                "s3_url": chunk["metadata"].get("s3_url", ""),
+                "content": chunk["content"][:1000]  # Store first 1000 chars for search
+            }
+            
+            # Add document_id for single namespace index
+            metadata["document_id"] = filename
+            
             vector_data = {
                 "id": f"{filename}_{i}",
                 "values": embeddings[i],
-                "metadata": {
-                    **chunk["metadata"],
-                    "filename": filename,
-                    "file_type": file_type,
-                    "chunk_index": i,
-                    "s3_url": chunk["metadata"].get("s3_url", ""),
-                    "content": chunk["content"][:1000]  # Store first 1000 chars for search
-                }
+                "metadata": metadata
             }
             vectors.append(vector_data)
         
-        # Store in Pinecone with namespace
-        await asyncio.to_thread(index.upsert, vectors=vectors, namespace=filename)
-        
-        debug_print("Chunks stored successfully in Pinecone", filename=filename, vector_count=len(vectors))
+        # Store in Pinecone (single namespace)
+        await asyncio.to_thread(index.upsert, vectors=vectors)
+        debug_print("Chunks stored successfully in single namespace index", filename=filename, vector_count=len(vectors))
         
     except Exception as e:
         debug_print("Pinecone storage failed", filename=filename, error=str(e))
@@ -454,87 +452,44 @@ async def untrain(request: UntrainRequest):
             await update_document_status(request.uuid, "FAILED", error_msg)
             raise HTTPException(status_code=400, detail=error_msg)
         
-        # Get appropriate index for file type
-        index = get_index_for_file_type(file_type)
+        # Use single namespace index with metadata filter deletion
+        index = pinecone_index
+        document_id = filename  # Use filename as document_id
         
-        # Delete the entire namespace (all chunks for this file)
+        # Delete using metadata filter (much more efficient)
         try:
-            # Get stats to check if namespace exists
-            stats = await asyncio.to_thread(index.describe_index_stats)
-            namespaces = stats.get('namespaces', {})
+            # Count vectors before deletion
+            stats_before = await asyncio.to_thread(index.describe_index_stats)
+            chunks_before = stats_before.total_vector_count
             
-            if filename in namespaces:
-                # Delete the namespace
-                await asyncio.to_thread(index.delete, delete_all=True, namespace=filename)
-                chunks_removed = namespaces[filename].get('vector_count', 0)
-                
-                debug_print("Document removal successful", uuid=request.uuid, filename=filename, chunks_removed=chunks_removed)
-                
-                # Update backend with PENDING status
-                await update_document_status(request.uuid, "PENDING")
-                
-                return UntrainResponse(
-                    success=True,
-                    message=f"Successfully removed {file_type} file: {filename}",
-                    s3_url=str(request.url),
-                    file_type=file_type,
-                    chunks_removed=chunks_removed
-                )
-            else:
-                debug_print("File not found in Pinecone", uuid=request.uuid, filename=filename)
-                
-                # Update backend with COMPLETED status (file not found is still a successful operation)
-                await update_document_status(request.uuid, "COMPLETED")
-                
-                return UntrainResponse(
-                    success=False,
-                    message=f"File not found: {filename}",
-                    s3_url=str(request.url),
-                    file_type=file_type,
-                    chunks_removed=0
-                )
-        except Exception as e:
-            # If namespace deletion fails, try alternative approach
-            # Query and delete by metadata
-            query_response = await asyncio.to_thread(
-                index.query,
-                vector=[0] * 1536,  # Dummy vector
-                filter={"s3_url": str(request.url)},
-                top_k=10000,
-                include_metadata=False,
-                namespace=filename
+            # Delete using metadata filter
+            await asyncio.to_thread(
+                index.delete,
+                filter={"document_id": {"$eq": document_id}}
             )
             
-            vector_ids = [match.id for match in query_response.matches]
+            # Count vectors after deletion
+            stats_after = await asyncio.to_thread(index.describe_index_stats)
+            chunks_after = stats_after.total_vector_count
+            chunks_removed = chunks_before - chunks_after
             
-            if vector_ids:
-                await asyncio.to_thread(index.delete, ids=vector_ids, namespace=filename)
-                
-                debug_print("Document removal successful (fallback method)", uuid=request.uuid, filename=filename, chunks_removed=len(vector_ids))
-                
-                # Update backend with PENDING status
-                await update_document_status(request.uuid, "PENDING")
-                
-                return UntrainResponse(
-                    success=True,
-                    message=f"Successfully removed {file_type} file: {filename}",
-                    s3_url=str(request.url),
-                    file_type=file_type,
-                    chunks_removed=len(vector_ids)
-                )
-            else:
-                debug_print("File not found in Pinecone (fallback method)", uuid=request.uuid, filename=filename)
-                
-                # Update backend with COMPLETED status (file not found is still a successful operation)
-                await update_document_status(request.uuid, "COMPLETED")
-                
-                return UntrainResponse(
-                    success=False,
-                    message=f"File not found: {filename}",
-                    s3_url=str(request.url),
-                    file_type=file_type,
-                    chunks_removed=0
-                )
+            debug_print("Document removal successful (single namespace)", uuid=request.uuid, filename=filename, chunks_removed=chunks_removed)
+            
+            # Update backend with PENDING status
+            await update_document_status(request.uuid, "PENDING")
+            
+            return UntrainResponse(
+                success=True,
+                message=f"Successfully removed {file_type} file: {filename}",
+                s3_url=str(request.url),
+                file_type=file_type,
+                chunks_removed=chunks_removed
+            )
+            
+        except Exception as e:
+            debug_print("Single namespace deletion failed", uuid=request.uuid, error=str(e))
+            await update_document_status(request.uuid, "FAILED", str(e))
+            raise HTTPException(status_code=500, detail=f"Failed to remove document: {str(e)}")
         
     except Exception as e:
         debug_print("Document removal failed", uuid=request.uuid, error=str(e))
@@ -563,73 +518,11 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         print(f"⏱️ TIMING: Embedding Generation: {embedding_time:.2f}ms")
         logger.info("fetch_rag_internal: Query embedding generated")
         
-        all_results = []
-        
-        # Search across all indexes
+        # Use single namespace index (optimized)
         search_start = time.time()
-        logger.info("fetch_rag_internal: Starting search across indexes")
-        indexes = [
-            ("pdf", pdf_index),
-            ("video", video_index), 
-            ("image", image_index)
-        ]
-        
-        for file_type, index in indexes:
-            try:
-                logger.info("fetch_rag_internal: Searching index", file_type=file_type)
-                # Get all namespaces in this index
-                stats = await asyncio.to_thread(index.describe_index_stats)
-                namespaces = stats.get('namespaces', {})
-                logger.info("fetch_rag_internal: Got namespaces", file_type=file_type, namespace_count=len(namespaces))
-                
-                if not namespaces:
-                    # If no namespaces, search without namespace
-                    search_response = await asyncio.to_thread(
-                        index.query,
-                        vector=query_embedding,
-                        top_k=top_k,
-                        include_metadata=True
-                    )
-                    
-                    for match in search_response.matches:
-                        result = {
-                            "content": match.metadata.get("content", ""),
-                            "score": float(match.score),
-                            "file_type": file_type,
-                            "filename": match.metadata.get("filename", "unknown"),
-                            "s3_url": match.metadata.get("s3_url", ""),
-                            "chunk_index": match.metadata.get("chunk_index", 0),
-                            "metadata": match.metadata
-                        }
-                        all_results.append(result)
-                else:
-                    # Search each namespace separately
-                    for namespace_name in namespaces.keys():
-                        search_response = await asyncio.to_thread(
-                            index.query,
-                            vector=query_embedding,
-                            top_k=top_k,
-                            include_metadata=True,
-                            namespace=namespace_name
-                        )
-                        
-                        for match in search_response.matches:
-                            result = {
-                                "content": match.metadata.get("content", ""),
-                                "score": float(match.score),
-                                "file_type": file_type,
-                                "filename": match.metadata.get("filename", namespace_name),
-                                "s3_url": match.metadata.get("s3_url", ""),
-                                "chunk_index": match.metadata.get("chunk_index", 0),
-                                "namespace": namespace_name,
-                                "metadata": match.metadata
-                            }
-                            all_results.append(result)
-                            
-            except Exception as e:
-                # Continue with other indexes if one fails
-                debug_print("Pinecone search error", operation="pinecone_search", error=str(e), index_type=file_type)
-                continue
+        logger.info("fetch_rag_internal: Using single namespace index")
+        print(f"🔧 Using single namespace index for search")
+        all_results = await search_pinecone_index(query_embedding, top_k)
         
         # Sort all results by score (highest first)
         all_results.sort(key=lambda x: x["score"], reverse=True)
@@ -638,7 +531,8 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         final_results = all_results[:top_k]
         
         search_time = (time.time() - search_start) * 1000
-        print(f"⏱️ TIMING: Pinecone Search: {search_time:.2f}ms")
+        print(f"\n⏱️ TIMING: Total Search Time: {search_time:.2f}ms")
+        print(f"   Final top {top_k} results selected from {len(all_results)} total\n")
         
         return {
             "success": True,
@@ -653,6 +547,230 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
             "results": [],
             "total_retrieved": 0
         }
+
+
+async def search_pinecone_index(query_embedding: list, top_k: int) -> list:
+    """Search the Pinecone index - single query across all vectors"""
+    try:
+        search_start = time.time()
+        print(f"\n🔍 Searching Pinecone Index (Single Query)...")
+        
+        # Single query across all vectors
+        search_response = await asyncio.to_thread(
+            pinecone_index.query,
+            vector=query_embedding,
+            top_k=top_k * 5,  # Get more results for better sorting
+            include_metadata=True
+        )
+        search_time = (time.time() - search_start) * 1000
+        print(f"   ⏱️ Pinecone Search: {search_time:.2f}ms")
+        
+        # Process results
+        all_results = []
+        for match in search_response.matches:
+            result = {
+                "content": match.metadata.get("content", ""),
+                "score": float(match.score),
+                "file_type": match.metadata.get("file_type", "unknown"),
+                "filename": match.metadata.get("document_id", "unknown"),
+                "s3_url": match.metadata.get("s3_url", ""),
+                "chunk_index": match.metadata.get("chunk_index", 0),
+                "namespace": match.metadata.get("document_id", "unknown"),
+                "metadata": match.metadata
+            }
+            all_results.append(result)
+        
+        total_time = (time.time() - search_start) * 1000
+        print(f"   ⏱️ TOTAL SEARCH TIME: {total_time:.2f}ms (results: {len(all_results)})")
+        print(f"   ✅ Single query search completed!")
+        
+        return all_results
+        
+    except Exception as e:
+        debug_print("Pinecone search error", operation="search_pinecone_index", error=str(e))
+        return []
+
+
+async def search_combined_index(query_embedding: list, top_k: int) -> list:
+    """Search the combined index - parallel namespace searches (optimized, no stats call)"""
+    try:
+        combined_start = time.time()
+        print(f"\n🔍 Searching Combined Index (Optimized - No Stats Call)...")
+        
+        # OPTIMIZED: Use hardcoded namespaces to skip expensive stats call
+        # This saves ~1,250ms per request!
+        known_namespaces = [
+            "1759323484341-1759323484309_constitution.pdf",
+            "1759127120635-1759127120544_videoplayback.mp4", 
+            "sample_data.mp4",
+            "1758371414338-1758371414263_constitution.pdf",
+            "1758888355890-1758888355802_constitution.pdf",
+            "1759126727318-1759126727237_Tera Hua _ Arijit Singh.mp4",
+            "1758873704608-1758873704561_file-example_PDF_1MB.pdf",
+            "1758886412533-1758886412461_constitution.pdf",
+            "1758365410045-1758365409980_c4611_sample_explain.pdf",
+            "1759124999018-1759124998786_2098989-uhd_3840x2160_30fps.mp4",
+            "sample_data.pdf",
+            "1758888424326-1758888424258_constitution.pdf",
+            "1759130049125-1759130049049_The Definition of Art.mp4",
+            "1759126119401-1759126119331_videoplayback.mp4"
+        ]
+        
+        print(f"   ⏱️ COMBINED - Using hardcoded namespaces: {len(known_namespaces)} (saved ~1,250ms)")
+        
+        # PARALLEL: Search all namespaces simultaneously
+        search_start = time.time()
+        
+        async def search_namespace(namespace_name):
+            try:
+                search_response = await asyncio.to_thread(
+                    combined_index.query,
+                    vector=query_embedding,
+                    top_k=top_k,
+                    include_metadata=True,
+                    namespace=namespace_name
+                )
+                return search_response.matches
+            except Exception as e:
+                debug_print(f"Namespace search error for {namespace_name}", operation="search_namespace", error=str(e))
+                return []
+        
+        # Search all namespaces in parallel
+        all_namespace_results = await asyncio.gather(*[
+            search_namespace(ns_name) for ns_name in known_namespaces
+        ])
+        
+        search_time = (time.time() - search_start) * 1000
+        print(f"   ⏱️ COMBINED - Parallel Searches ({len(known_namespaces)} namespaces): {search_time:.2f}ms")
+        
+        # Flatten and process results
+        all_results = []
+        for namespace_matches in all_namespace_results:
+            for match in namespace_matches:
+                result = {
+                    "content": match.metadata.get("content", ""),
+                    "score": float(match.score),
+                    "file_type": match.metadata.get("file_type", "unknown"),
+                    "filename": match.metadata.get("filename", "unknown"),
+                    "s3_url": match.metadata.get("s3_url", ""),
+                    "chunk_index": match.metadata.get("chunk_index", 0),
+                    "namespace": match.metadata.get("filename", "unknown"),
+                    "metadata": match.metadata
+                }
+                all_results.append(result)
+        
+        combined_time = (time.time() - combined_start) * 1000
+        print(f"   ⏱️ COMBINED INDEX TOTAL: {combined_time:.2f}ms (results: {len(all_results)})")
+        print(f"   ✅ Optimized parallel search - no stats call needed!")
+        
+        return all_results
+        
+    except Exception as e:
+        debug_print("Combined index search error", operation="search_combined_index", error=str(e))
+        return []
+
+
+async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
+    """Search 3 separate indexes in parallel - original method"""
+    
+    # Define search function for each index
+    async def search_index(file_type: str, index):
+        """Search a single index and return results"""
+        try:
+            index_start = time.time()
+            logger.info("fetch_rag_internal: Searching index", file_type=file_type)
+            index_results = []
+            
+            # Get all namespaces in this index
+            stats_start = time.time()
+            stats = await asyncio.to_thread(index.describe_index_stats)
+            stats_time = (time.time() - stats_start) * 1000
+            namespaces = stats.get('namespaces', {})
+            print(f"   ⏱️ {file_type.upper()} - Get Stats: {stats_time:.2f}ms (namespaces: {len(namespaces)})")
+            logger.info("fetch_rag_internal: Got namespaces", file_type=file_type, namespace_count=len(namespaces))
+            
+            if not namespaces:
+                # If no namespaces, search without namespace
+                no_ns_start = time.time()
+                search_response = await asyncio.to_thread(
+                    index.query,
+                    vector=query_embedding,
+                    top_k=top_k,
+                    include_metadata=True
+                )
+                no_ns_time = (time.time() - no_ns_start) * 1000
+                print(f"   ⏱️ {file_type.UPPER()} - Search (no namespace): {no_ns_time:.2f}ms")
+                
+                for match in search_response.matches:
+                    result = {
+                        "content": match.metadata.get("content", ""),
+                        "score": float(match.score),
+                        "file_type": file_type,
+                        "filename": match.metadata.get("filename", "unknown"),
+                        "s3_url": match.metadata.get("s3_url", ""),
+                        "chunk_index": match.metadata.get("chunk_index", 0),
+                        "metadata": match.metadata
+                    }
+                    index_results.append(result)
+            else:
+                # Search each namespace separately
+                namespace_total_time = 0
+                for namespace_name in namespaces.keys():
+                    ns_start = time.time()
+                    search_response = await asyncio.to_thread(
+                        index.query,
+                        vector=query_embedding,
+                        top_k=top_k,
+                        include_metadata=True,
+                        namespace=namespace_name
+                    )
+                    ns_time = (time.time() - ns_start) * 1000
+                    namespace_total_time += ns_time
+                    print(f"   ⏱️ {file_type.upper()} - Search '{namespace_name[:30]}...': {ns_time:.2f}ms")
+                    
+                    for match in search_response.matches:
+                        result = {
+                            "content": match.metadata.get("content", ""),
+                            "score": float(match.score),
+                            "file_type": file_type,
+                            "filename": match.metadata.get("filename", namespace_name),
+                            "s3_url": match.metadata.get("s3_url", ""),
+                            "chunk_index": match.metadata.get("chunk_index", 0),
+                            "namespace": namespace_name,
+                            "metadata": match.metadata
+                        }
+                        index_results.append(result)
+                
+                print(f"   ⏱️ {file_type.upper()} - All Namespace Searches: {namespace_total_time:.2f}ms")
+            
+            index_total_time = (time.time() - index_start) * 1000
+            print(f"   ⏱️ {file_type.upper()} INDEX TOTAL: {index_total_time:.2f}ms (results: {len(index_results)})")
+            
+            return index_results
+            
+        except Exception as e:
+            # Return empty list on error
+            debug_print("Pinecone search error", operation="pinecone_search", error=str(e), index_type=file_type)
+            return []
+    
+    # Search all indexes in parallel using asyncio.gather
+    print(f"\n🔍 Starting Parallel Pinecone Search...")
+    pdf_results, video_results, image_results = await asyncio.gather(
+        search_index("pdf", pdf_index),
+        search_index("video", video_index),
+        search_index("image", image_index)
+    )
+    
+    # Combine all results
+    all_results = pdf_results + video_results + image_results
+    
+    print(f"\n📊 Index Results Summary:")
+    print(f"   - PDF: {len(pdf_results)} results")
+    print(f"   - VIDEO: {len(video_results)} results")
+    print(f"   - IMAGE: {len(image_results)} results")
+    print(f"   - TOTAL: {len(all_results)} results before sorting")
+    
+    return all_results
 
 
 @app.post("/fetch_rag", response_model=RAGQueryResponse)

@@ -706,7 +706,7 @@ def filter_conversation_history(conversation_history: List[Dict]) -> List[Dict]:
 
 
 async def analyze_query_and_classify(request_data: dict) -> Dict[str, str]:
-    """Combined function: Rephrase query + Classify type in ONE API call using gpt-5-nano"""
+    """Combined function: Rephrase query + Classify type in ONE API call using gpt-4.1-nano"""
     try:
         import openai
         
@@ -775,14 +775,12 @@ Return your response in this EXACT JSON format (no other text):
 }}"""
 
         response = openai.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
             messages=[
                 {"role": "system", "content": "You are a query analyzer. Analyze and return results in JSON format."},
                 {"role": "user", "content": combined_prompt}
             ],
-            response_format={"type": "json_object"},
-            max_tokens=150,
-            temperature=0.3
+            response_format={"type": "json_object"}
         )
         
         result = json.loads(response.choices[0].message.content.strip())
@@ -841,13 +839,11 @@ Examples:
 Return ONLY the title without quotes, nothing else."""
 
         response = openai.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
             messages=[
                 {"role": "system", "content": "You are a conversation title generator. Return only the title."},
                 {"role": "user", "content": prompt}
-            ],
-            max_tokens=20,
-            temperature=0.3
+            ]
         )
         
         title = response.choices[0].message.content.strip()
@@ -864,7 +860,7 @@ Return ONLY the title without quotes, nothing else."""
 
 
 async def generate_general_conversation_answer(request_data: dict) -> Dict[str, str]:
-    """Generate general conversation response using gpt-5-nano with filtered conversation history"""
+    """Generate general conversation response using gpt-4.1-nano with filtered conversation history"""
     try:
         import openai
         
@@ -938,7 +934,7 @@ Examples:
                     # Continue existing conversation
                     logger.info("Continuing general conversation with responses.create()")
                     response = openai.responses.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-nano",
                         input=input_message,
                         previous_response_id=previous_response_id,
                         max_output_tokens=300,
@@ -948,7 +944,7 @@ Examples:
                     # Start new conversation
                     logger.info("Starting new general conversation with responses.create()")
                     response = openai.responses.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-nano",
                         input=input_message,
                         max_output_tokens=300,
                         temperature=0.2
@@ -980,10 +976,8 @@ Examples:
                 ]
                 
                 response = openai.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    max_tokens=300,
-                    temperature=0.2
+                    model="gpt-4.1-nano",
+                    messages=messages
                 )
                 
                 ai_answer = response.choices[0].message.content.strip()
@@ -1206,7 +1200,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
 
 
 async def generate_conversational_ai_answer(request_data: dict, retrieved_content: List[Dict[str, Any]]) -> Dict[str, str]:
-    """Generate knowledge-based AI answer using gpt-5-mini with filtered conversation history"""
+    """Generate knowledge-based AI answer using gpt-4.1-nano with filtered conversation history"""
     try:
         import openai
         
@@ -1294,7 +1288,7 @@ Provide a clear, natural answer based on the available information."""
                     # Continue existing conversation
                     logger.info("Continuing conversation with responses.create()", previous_response_id=previous_response_id)
                     response = openai.responses.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-nano",
                         input=input_message,
                         previous_response_id=previous_response_id,
                         max_output_tokens=1200,
@@ -1304,7 +1298,7 @@ Provide a clear, natural answer based on the available information."""
                     # Start new conversation
                     logger.info("Starting new conversation with responses.create()")
                     response = openai.responses.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-nano",
                         input=input_message,
                         max_output_tokens=1200,
                         temperature=0.3
@@ -1336,10 +1330,8 @@ Provide a clear, natural answer based on the available information."""
                 ]
                 
                 response = openai.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    max_tokens=1200,
-                    temperature=0.3
+                    model="gpt-4.1-nano",
+                    messages=messages
                 )
                 
                 ai_answer = response.choices[0].message.content.strip()

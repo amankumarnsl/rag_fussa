@@ -31,6 +31,9 @@ from .utils.cpu_config import run_cpu_task, debug_print_cpu_info, get_cpu_info
 # Simple debug toggle - set to True for console prints, False for silence
 DEBUG_PRINT = os.getenv("DEBUG_PRINT", "false").lower() == "true"
 
+# API Method Toggle - set to True for responses.create(), False for chat.completions.create()
+USE_RESPONSE_API = os.getenv("USE_RESPONSE_API", "false").lower() == "true"
+
 # Debug file logging setup
 debug_file = None
 if DEBUG_PRINT:
@@ -122,7 +125,7 @@ async def log_requests(request: Request, call_next):
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error", "request_id": request_id}
-        )
+)
 
 # Initialize clients
 s3_client = boto3.client(
@@ -194,9 +197,9 @@ async def get_embeddings(texts):
         async def _get_embeddings():
             return await asyncio.to_thread(
                 lambda: openai.embeddings.create(
-                    input=texts,
-                    model="text-embedding-3-small"
-                )
+        input=texts,
+        model="text-embedding-3-small"
+    )
             )
         
         response = await _get_embeddings()
@@ -334,10 +337,10 @@ async def train(request: TrainRequest):
         
         # Step 2: Start async Celery task
         request_data = {
-            "name": request.name,
-            "uuid": request.uuid,
-            "url": str(request.url),
-            "type": request.type,
+                    "name": request.name,
+                    "uuid": request.uuid,
+                    "url": str(request.url),
+                    "type": request.type,
             "trainingStatus": request.trainingStatus
         }
         
@@ -397,8 +400,8 @@ async def train(request: TrainRequest):
             "message": f"Document processing completed: {len(chunks)} chunks stored",
             "uuid": request.uuid,
             "status": "COMPLETED",
-            "filename": filename,
-            "file_type": file_type,
+                    "filename": filename,
+                    "file_type": file_type,
             "chunks_processed": len(chunks)
         }
         
@@ -926,32 +929,78 @@ Examples:
 - User: "who is prime minister of india" → "Sorry, I can't answer general questions. I only respond using your uploaded knowledge base."
 """
         
-        if previous_response_id:
-            # Continue existing conversation
-            logger.info("Continuing general conversation")
-            response = openai.responses.create(
-                model="gpt-4o-mini",
-                input=input_message,
-                previous_response_id=previous_response_id,
-                max_output_tokens=300,  # Shorter for general conversation
-                temperature=0.2  # Lower temperature for more deterministic refusals
-            )
+        print(f"🔧 Using API Method: {'responses.create()' if USE_RESPONSE_API else 'chat.completions.create()'}")
+        
+        if USE_RESPONSE_API:
+            # ===== METHOD 1: responses.create() API =====
+            try:
+                if previous_response_id:
+                    # Continue existing conversation
+                    logger.info("Continuing general conversation with responses.create()")
+                    response = openai.responses.create(
+                        model="gpt-4o-mini",
+                        input=input_message,
+                        previous_response_id=previous_response_id,
+                        max_output_tokens=300,
+                        temperature=0.2
+                    )
+                else:
+                    # Start new conversation
+                    logger.info("Starting new general conversation with responses.create()")
+                    response = openai.responses.create(
+                        model="gpt-4o-mini",
+                        input=input_message,
+                        max_output_tokens=300,
+                        temperature=0.2
+                    )
+                
+                ai_answer = response.output_text.strip()
+                new_conversation_id = response.id
+                
+                # Extract token usage
+                input_tokens = response.usage.input_tokens if hasattr(response, 'usage') else 'N/A'
+                output_tokens = response.usage.output_tokens if hasattr(response, 'usage') else 'N/A'
+                total_tokens = response.usage.total_tokens if hasattr(response, 'usage') else 'N/A'
+                
+                print(f"🎫 TOKENS: Input={input_tokens} | Output={output_tokens} | Total={total_tokens}")
+                logger.info("Generated general conversation response using responses.create()")
+                return {"answer": ai_answer, "conversationId": new_conversation_id}
+                
+            except Exception as e:
+                print(f"❌ responses.create() ERROR: {str(e)}")
+                raise e
+        
         else:
-            # Start new conversation
-            logger.info("Starting new general conversation")
-            response = openai.responses.create(
-                model="gpt-4o-mini",
-                input=input_message,
-                max_output_tokens=300,
-                temperature=0.2
-            )
-        
-        # Return response ID for future conversation continuity
-        # Backend will handle storing this
-        ai_answer = response.output_text.strip()
-        
-        logger.info("Generated general conversation response")
-        return {"answer": ai_answer, "conversationId": response.id}
+            # ===== METHOD 2: chat.completions.create() API =====
+            try:
+                # Convert input_message to chat format
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant for general conversation."},
+                    {"role": "user", "content": input_message}
+                ]
+                
+                response = openai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=300,
+                    temperature=0.2
+                )
+                
+                ai_answer = response.choices[0].message.content.strip()
+                new_conversation_id = f"chat_{int(time.time() * 1000)}"  # Generate simple ID
+                
+                # Extract token usage
+                input_tokens = response.usage.prompt_tokens
+                output_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                
+                print(f"🎫 TOKENS: Input={input_tokens} | Output={output_tokens} | Total={total_tokens}")
+                logger.info("Generated general conversation response using chat.completions.create()")
+                return {"answer": ai_answer, "conversationId": new_conversation_id}
+                
+            except Exception as e:
+                print(f"❌ chat.completions.create() ERROR: {str(e)}")
+                raise e
         
     except Exception as e:
         debug_print("Generate general conversation answer error", operation="generate_general_conversation_answer", error=str(e))
@@ -1236,43 +1285,78 @@ Provide a clear, natural answer based on the available information."""
         previous_response_id = request_data.get("conversationId")
         
         print(f"🔍 DEBUG: Previous Response ID: {previous_response_id}")
-        print(f"🔍 DEBUG: About to call OpenAI with model: gpt-5-mini")
+        print(f"🔧 Using API Method: {'responses.create()' if USE_RESPONSE_API else 'chat.completions.create()'}")
         
-        try:
-            if previous_response_id:
-                # Continue existing conversation
-                logger.info("Continuing conversation", previous_response_id=previous_response_id)
-                response = openai.responses.create(
+        if USE_RESPONSE_API:
+            # ===== METHOD 1: responses.create() API =====
+            try:
+                if previous_response_id:
+                    # Continue existing conversation
+                    logger.info("Continuing conversation with responses.create()", previous_response_id=previous_response_id)
+                    response = openai.responses.create(
+                        model="gpt-4o-mini",
+                        input=input_message,
+                        previous_response_id=previous_response_id,
+                        max_output_tokens=1200,
+                        temperature=0.3
+                    )
+                else:
+                    # Start new conversation
+                    logger.info("Starting new conversation with responses.create()")
+                    response = openai.responses.create(
+                        model="gpt-4o-mini",
+                        input=input_message,
+                        max_output_tokens=1200,
+                        temperature=0.3
+                    )
+                
+                ai_answer = response.output_text.strip()
+                new_conversation_id = response.id
+                
+                # Extract token usage
+                input_tokens = response.usage.input_tokens if hasattr(response, 'usage') else 'N/A'
+                output_tokens = response.usage.output_tokens if hasattr(response, 'usage') else 'N/A'
+                total_tokens = response.usage.total_tokens if hasattr(response, 'usage') else 'N/A'
+                
+                print(f"🎫 TOKENS: Input={input_tokens} | Output={output_tokens} | Total={total_tokens}")
+                logger.info("Generated response using responses.create()", response_id=new_conversation_id)
+                return {"answer": ai_answer, "conversationId": new_conversation_id}
+                
+            except Exception as e:
+                print(f"❌ responses.create() ERROR: {str(e)}")
+                raise e
+        
+        else:
+            # ===== METHOD 2: chat.completions.create() API =====
+            try:
+                # Convert input_message to chat format
+                messages = [
+                    {"role": "system", "content": "You are an expert assistant that answers questions using provided context."},
+                    {"role": "user", "content": input_message}
+                ]
+                
+                response = openai.chat.completions.create(
                     model="gpt-4o-mini",
-                    input=input_message,
-                    previous_response_id=previous_response_id,  # Continue conversation
-                    max_output_tokens=1200,
-                    temperature=0.3  # Balanced temperature for better relevance detection
+                    messages=messages,
+                    max_tokens=1200,
+                    temperature=0.3
                 )
-            else:
-                # Start new conversation
-                logger.info("Starting new conversation")
-                response = openai.responses.create(
-                    model="gpt-4o-mini",
-                    input=input_message,
-                    max_output_tokens=1200,
-                    temperature=0.3  # Balanced temperature for better relevance detection
-                )
-            
-            print(f"🔍 DEBUG: OpenAI Response ID: {response.id}")
-            print(f"🔍 DEBUG: OpenAI Response Text Length: {len(response.output_text)}")
-            
-            # Return response ID for future conversation continuity
-            # Backend will handle storing this
-            ai_answer = response.output_text.strip()
-            
-            logger.info("Generated conversational response", response_id=response.id)
-            return {"answer": ai_answer, "conversationId": response.id}
-            
-        except Exception as openai_error:
-            print(f"🔍 DEBUG: OpenAI API Error: {str(openai_error)}")
-            print(f"🔍 DEBUG: OpenAI Error Type: {type(openai_error)}")
-            raise openai_error
+                
+                ai_answer = response.choices[0].message.content.strip()
+                new_conversation_id = f"chat_{int(time.time() * 1000)}"  # Generate simple ID
+                
+                # Extract token usage
+                input_tokens = response.usage.prompt_tokens
+                output_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                
+                print(f"🎫 TOKENS: Input={input_tokens} | Output={output_tokens} | Total={total_tokens}")
+                logger.info("Generated response using chat.completions.create()", conversation_id=new_conversation_id)
+                return {"answer": ai_answer, "conversationId": new_conversation_id}
+                
+            except Exception as e:
+                print(f"❌ chat.completions.create() ERROR: {str(e)}")
+                raise e
         
     except Exception as e:
         debug_print("Generate conversational AI answer error", operation="generate_conversational_ai_answer", error=str(e))

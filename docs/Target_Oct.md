@@ -8,6 +8,48 @@
 
 # ------------------------------
 
+## optimized way time calculation
+```
+The Real Bottlenecks (in order):
+Pinecone Search: 13.5s (52% of total time)
+Knowledge Answer: 6.7s (26% of total time)
+Embedding: 1.5s (6% of total time)
+Combined Analysis: 1.3s (5% of total time)
+
+🔍 DEBUG: Is First Message: True
+🔍 DEBUG: Conversation ID from request: 
+🔍 DEBUG: Generating conversation title for: should we take care of person according to constitituion?
+🔍 DEBUG: Generated Title: Constitutional Care Responsibilities Discussion
+🔍 DEBUG: Combined Analysis Result: {'rephrasedQuery': 'Should we take care of a person according to the constitution?', 'classification': 'KNOWLEDGE_QUESTION'}
+🔍 DEBUG: Final Rephrased Query: Should we take care of a person according to the constitution?
+🔍 DEBUG: Final Classification: KNOWLEDGE_QUESTION
+⏱️ TIMING: Combined Analysis: 3540.96ms
+🔍 DEBUG: Original Query: should we take care of person according to constitituion?
+🔍 DEBUG: Rephrased Query: Should we take care of a person according to the constitution?
+🔍 DEBUG: Classification: KNOWLEDGE_QUESTION
+🔍 DEBUG: Conversation History Length: 0
+⏱️ TIMING: Embedding Generation: 938.51ms
+⏱️ TIMING: Pinecone Search: 12411.23ms
+⏱️ TIMING: RAG Retrieval: 13349.97ms
+🔍 DEBUG: RAG Success: True
+🔍 DEBUG: Total Retrieved: 3
+🔍 DEBUG: Retrieved Content Preview: --- Page 53 --- THE CONSTITUTION OF INDIA (Part IV.— Directive Principles of State Policy) 22 1[(f) 
+🔍 DEBUG: Generating KNOWLEDGE answer with 3 content pieces
+🔍 DEBUG: Previous Response ID: 
+🔍 DEBUG: About to call OpenAI with model: gpt-5-mini
+🔍 DEBUG: OpenAI Response ID: resp_0dccb603fc3534b60068ef82b8540c819fa859253249b68730
+🔍 DEBUG: OpenAI Response Text Length: 1782
+⏱️ TIMING: Knowledge Answer Generation: 6326.13ms
+🔍 DEBUG: Knowledge Answer Generated: Yes, according to the Constitution of India, there are several provisions that emphasize the importa...
+🔍 DEBUG: New Conversation ID: resp_0dccb603fc3534b60068ef82b8540c819fa859253249b68730
+⏱️ TIMING: TOTAL REQUEST TIME: 24689.95ms
+⏱️ TIMING BREAKDOWN:
+   - Combined Analysis: 3540.96ms
+   - RAG Retrieval: 13349.97ms
+   - Knowledge Answer: 6326.13ms
+
+```
+
 
 ## Cost Evaluation
 ``` 

@@ -37,6 +37,10 @@ USE_RESPONSE_API = os.getenv("USE_RESPONSE_API", "false").lower() == "true"
 # Import configuration from config file
 from .config.config import INCLUDE_CHUNKS_IN_RESPONSE, CONVERSATION_TITLE_MESSAGE_NUMBER
 
+# Endpoint-based locks to prevent concurrent operations
+is_processing = False  # Only one process operation allowed
+is_unprocessing = False  # Only one unprocess operation allowed
+
 # Debug file logging setup
 debug_file = None
 if DEBUG_PRINT:
@@ -267,6 +271,26 @@ async def store_chunks_in_pinecone(chunks: List[Dict], embeddings: List[List[flo
         raise Exception(f"Failed to store chunks in Pinecone: {str(e)}")
 
 
+async def check_document_exists(filename: str) -> bool:
+    """Check if document already exists in vector DB by filename"""
+    try:
+        # Search Pinecone for documents with this filename
+        search_response = await asyncio.to_thread(
+            pinecone_index.query,
+            vector=[0.0] * 1536,  # Dummy vector for metadata search
+            top_k=1,
+            include_metadata=True,
+            filter={"document_id": {"$eq": filename}}
+        )
+        
+        # Return True if any results found
+        return len(search_response.matches) > 0
+        
+    except Exception as e:
+        logger.error("Error checking document existence", filename=filename, error=str(e))
+        return False
+
+
 async def update_document_status(uuid: str, status: str, failure_reason: str = None):
     """Update document status in backend"""
     try:
@@ -323,7 +347,24 @@ async def update_document_status(uuid: str, status: str, failure_reason: str = N
 @app.post("/ai-service/internal/process-document-data")
 async def train(request: TrainRequest):
     """Start document processing asynchronously"""
+    global is_processing, is_unprocessing
     request_id = f"req_{int(time.time() * 1000)}"
+    
+    # Step 1: Check if process endpoint is busy - IMMEDIATE CHECK
+    if is_processing:
+        # Update backend with FAILED status
+        await update_document_status(request.uuid, "FAILED", "Process endpoint busy")
+        return JSONResponse(
+            status_code=409,
+            content={
+                "success": False,
+                "message": "Process endpoint busy",
+                "detail": "Process endpoint is currently busy processing another document. Please try again later."
+            }
+        )
+    
+    # Step 2: Set process lock IMMEDIATELY
+    is_processing = True
     
     try:
         logger.info("Starting async document training", 
@@ -333,10 +374,25 @@ async def train(request: TrainRequest):
                    type=request.type,
                    request_id=request_id)
         
-        # Step 1: Update backend with PROCESSING status
+        # Step 3: Update backend with PROCESSING status
         await update_document_status(request.uuid, "PROCESSING")
         
-        # Step 2: Start async Celery task
+        # Step 4: Check if document already exists in vector DB
+        filename = extract_filename_from_s3_url(request.url)
+        if await check_document_exists(filename):
+            await update_document_status(request.uuid, "FAILED", "Document already exists in knowledge base")
+            # Clear process lock
+            is_processing = False
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "message": "Document already exists",
+                    "detail": f"Document '{filename}' already exists in the knowledge base. Please remove it first or use a different document."
+                }
+            )
+        
+        # Step 5: Start async Celery task
         request_data = {
                     "name": request.name,
                     "uuid": request.uuid,
@@ -396,13 +452,16 @@ async def train(request: TrainRequest):
         debug_print("Document processing completed", uuid=request.uuid, filename=filename, chunk_count=len(chunks))
         await update_document_status(request.uuid, "COMPLETED")
         
+        # Step 10: Clear process lock
+        is_processing = False
+        
         return {
             "success": True,
             "message": f"Document processing completed: {len(chunks)} chunks stored",
             "uuid": request.uuid,
             "status": "COMPLETED",
-                    "filename": filename,
-                    "file_type": file_type,
+            "filename": filename,
+            "file_type": file_type,
             "chunks_processed": len(chunks)
         }
         
@@ -412,7 +471,17 @@ async def train(request: TrainRequest):
         # Update backend with FAILED status
         await update_document_status(request.uuid, "FAILED", str(e))
         
-        raise HTTPException(status_code=500, detail=f"Failed to start document processing: {str(e)}")
+        # Clear process lock
+        is_processing = False
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": "Document processing failed",
+                "detail": f"Failed to start document processing: {str(e)}"
+            }
+        )
 
 @app.get("/ai-service/internal/task-status/{task_id}")
 async def get_task_status(task_id: str):
@@ -438,21 +507,55 @@ async def get_task_status(task_id: str):
 
 @app.post("/ai-service/internal/unprocess-document-data", response_model=UntrainResponse)
 async def untrain(request: UntrainRequest):
+    global is_processing, is_unprocessing
+    
+    # Step 1: Check if unprocess endpoint is busy - IMMEDIATE CHECK
+    if is_unprocessing:
+        # Update backend with FAILED status
+        await update_document_status(request.uuid, "FAILED", "Unprocess endpoint busy")
+        return JSONResponse(
+            status_code=409,
+            content={
+                "success": False,
+                "message": "Unprocess endpoint busy",
+                "detail": "Unprocess endpoint is currently busy removing another document. Please try again later."
+            }
+        )
+    
+    # Step 2: Set unprocess lock IMMEDIATELY
+    is_unprocessing = True
+    
     try:
         debug_print("Starting document removal", uuid=request.uuid, url=str(request.url))
         
-        # Step 1: Update backend with PROCESSING status
+        # Step 3: Update backend with PROCESSING status
         await update_document_status(request.uuid, "PROCESSING")
         
-        # Extract filename from S3 URL (URL decoding handled in extract_filename_from_s3_url)
+        # Step 4: Extract filename from S3 URL (URL decoding handled in extract_filename_from_s3_url)
         filename = extract_filename_from_s3_url(request.url)
         file_extension = filename.split('.')[-1].lower()
         file_type = await get_file_type(file_extension)
+        
+        # Step 5: Check if document exists in vector DB (opposite of process)
+        if not await check_document_exists(filename):
+            await update_document_status(request.uuid, "FAILED", "Document not found in knowledge base")
+            # Clear unprocess lock
+            is_unprocessing = False
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "message": "Document not found",
+                    "detail": f"Document '{filename}' not found in the knowledge base. It may have already been removed or never processed."
+                }
+            )
         
         if file_type == 'unknown':
             error_msg = f"Unsupported file type: {file_extension}"
             debug_print("Unsupported file type", uuid=request.uuid, file_extension=file_extension)
             await update_document_status(request.uuid, "FAILED", error_msg)
+            # Clear unprocess lock
+            is_unprocessing = False
             raise HTTPException(status_code=400, detail=error_msg)
         
         # Use single namespace index with metadata filter deletion
@@ -481,6 +584,9 @@ async def untrain(request: UntrainRequest):
             # Update backend with PENDING status
             await update_document_status(request.uuid, "PENDING")
             
+            # Clear unprocess lock
+            is_unprocessing = False
+            
             return UntrainResponse(
                 success=True,
                 message=f"Successfully removed {file_type} file: {filename}",
@@ -492,7 +598,16 @@ async def untrain(request: UntrainRequest):
         except Exception as e:
             debug_print("Single namespace deletion failed", uuid=request.uuid, error=str(e))
             await update_document_status(request.uuid, "FAILED", str(e))
-            raise HTTPException(status_code=500, detail=f"Failed to remove document: {str(e)}")
+            # Clear unprocess lock
+            is_unprocessing = False
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Document removal failed",
+                    "detail": f"Failed to remove document: {str(e)}"
+                }
+            )
         
     except Exception as e:
         debug_print("Document removal failed", uuid=request.uuid, error=str(e))
@@ -500,7 +615,17 @@ async def untrain(request: UntrainRequest):
         # Update backend with FAILED status
         await update_document_status(request.uuid, "FAILED", str(e))
         
-        raise HTTPException(status_code=500, detail=f"Untrain failed: {str(e)}")
+        # Clear unprocess lock
+        is_unprocessing = False
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": "Document removal failed",
+                "detail": f"Untrain failed: {str(e)}"
+            }
+        )
 
 
 @app.post("/retrain")

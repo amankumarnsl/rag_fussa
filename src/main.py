@@ -505,23 +505,33 @@ async def retrain():
     return {"message": "Retrain endpoint - to be implemented"}
 
 
-async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
+async def fetch_rag_internal(query: str, top_k: int = 5, classification: str = "KNOWLEDGE_QUESTION") -> Dict[str, Any]:
     """Internal function to fetch RAG results (used by both fetch_rag and ask-query-rag)"""
     try:
-        logger.info("fetch_rag_internal: Starting RAG fetch", query=query, top_k=top_k)
+        logger.info("fetch_rag_internal: Starting RAG fetch", query=query, top_k=top_k, classification=classification)
         
-        # Generate query embedding directly
+        # Skip Pinecone search for general conversation questions
+        if classification == "GENERAL_CONVERSATION":
+            logger.info("fetch_rag_internal: Skipping Pinecone search for general conversation")
+            
+            return {
+                "success": True,
+                "results": [],
+                "total_retrieved": 0,
+                "skipped": True,
+                "reason": "General conversation - no document search needed"
+            }
+        
+        # Generate query embedding for knowledge questions
         embedding_start = time.time()
         logger.info("fetch_rag_internal: Generating query embedding")
         query_embedding = await get_embeddings([query])
         embedding_time = (time.time() - embedding_start) * 1000
-        print(f"⏱️ TIMING: Embedding Generation: {embedding_time:.2f}ms")
         logger.info("fetch_rag_internal: Query embedding generated")
         
         # Use single namespace index (optimized)
         search_start = time.time()
         logger.info("fetch_rag_internal: Using single namespace index")
-        print(f"🔧 Using single namespace index for search")
         all_results = await search_pinecone_index(query_embedding, top_k)
         
         # Sort all results by score (highest first)
@@ -531,13 +541,12 @@ async def fetch_rag_internal(query: str, top_k: int = 5) -> Dict[str, Any]:
         final_results = all_results[:top_k]
         
         search_time = (time.time() - search_start) * 1000
-        print(f"\n⏱️ TIMING: Total Search Time: {search_time:.2f}ms")
-        print(f"   Final top {top_k} results selected from {len(all_results)} total\n")
         
         return {
             "success": True,
             "results": final_results,
-            "total_retrieved": len(final_results)
+            "total_retrieved": len(final_results),
+            "skipped": False
         }
         
     except Exception as e:
@@ -553,7 +562,6 @@ async def search_pinecone_index(query_embedding: list, top_k: int) -> list:
     """Search the Pinecone index - single query across all vectors"""
     try:
         search_start = time.time()
-        print(f"\n🔍 Searching Pinecone Index (Single Query)...")
         
         # Single query across all vectors
         search_response = await asyncio.to_thread(
@@ -563,7 +571,6 @@ async def search_pinecone_index(query_embedding: list, top_k: int) -> list:
             include_metadata=True
         )
         search_time = (time.time() - search_start) * 1000
-        print(f"   ⏱️ Pinecone Search: {search_time:.2f}ms")
         
         # Process results
         all_results = []
@@ -581,8 +588,6 @@ async def search_pinecone_index(query_embedding: list, top_k: int) -> list:
             all_results.append(result)
         
         total_time = (time.time() - search_start) * 1000
-        print(f"   ⏱️ TOTAL SEARCH TIME: {total_time:.2f}ms (results: {len(all_results)})")
-        print(f"   ✅ Single query search completed!")
         
         return all_results
         
@@ -595,7 +600,6 @@ async def search_combined_index(query_embedding: list, top_k: int) -> list:
     """Search the combined index - parallel namespace searches (optimized, no stats call)"""
     try:
         combined_start = time.time()
-        print(f"\n🔍 Searching Combined Index (Optimized - No Stats Call)...")
         
         # OPTIMIZED: Use hardcoded namespaces to skip expensive stats call
         # This saves ~1,250ms per request!
@@ -616,7 +620,6 @@ async def search_combined_index(query_embedding: list, top_k: int) -> list:
             "1759126119401-1759126119331_videoplayback.mp4"
         ]
         
-        print(f"   ⏱️ COMBINED - Using hardcoded namespaces: {len(known_namespaces)} (saved ~1,250ms)")
         
         # PARALLEL: Search all namespaces simultaneously
         search_start = time.time()
@@ -641,7 +644,6 @@ async def search_combined_index(query_embedding: list, top_k: int) -> list:
         ])
         
         search_time = (time.time() - search_start) * 1000
-        print(f"   ⏱️ COMBINED - Parallel Searches ({len(known_namespaces)} namespaces): {search_time:.2f}ms")
         
         # Flatten and process results
         all_results = []
@@ -660,8 +662,6 @@ async def search_combined_index(query_embedding: list, top_k: int) -> list:
                 all_results.append(result)
         
         combined_time = (time.time() - combined_start) * 1000
-        print(f"   ⏱️ COMBINED INDEX TOTAL: {combined_time:.2f}ms (results: {len(all_results)})")
-        print(f"   ✅ Optimized parallel search - no stats call needed!")
         
         return all_results
         
@@ -686,7 +686,6 @@ async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
             stats = await asyncio.to_thread(index.describe_index_stats)
             stats_time = (time.time() - stats_start) * 1000
             namespaces = stats.get('namespaces', {})
-            print(f"   ⏱️ {file_type.upper()} - Get Stats: {stats_time:.2f}ms (namespaces: {len(namespaces)})")
             logger.info("fetch_rag_internal: Got namespaces", file_type=file_type, namespace_count=len(namespaces))
             
             if not namespaces:
@@ -699,7 +698,6 @@ async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
                     include_metadata=True
                 )
                 no_ns_time = (time.time() - no_ns_start) * 1000
-                print(f"   ⏱️ {file_type.UPPER()} - Search (no namespace): {no_ns_time:.2f}ms")
                 
                 for match in search_response.matches:
                     result = {
@@ -726,7 +724,6 @@ async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
                     )
                     ns_time = (time.time() - ns_start) * 1000
                     namespace_total_time += ns_time
-                    print(f"   ⏱️ {file_type.upper()} - Search '{namespace_name[:30]}...': {ns_time:.2f}ms")
                     
                     for match in search_response.matches:
                         result = {
@@ -741,10 +738,8 @@ async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
                         }
                         index_results.append(result)
                 
-                print(f"   ⏱️ {file_type.upper()} - All Namespace Searches: {namespace_total_time:.2f}ms")
             
             index_total_time = (time.time() - index_start) * 1000
-            print(f"   ⏱️ {file_type.upper()} INDEX TOTAL: {index_total_time:.2f}ms (results: {len(index_results)})")
             
             return index_results
             
@@ -754,7 +749,6 @@ async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
             return []
     
     # Search all indexes in parallel using asyncio.gather
-    print(f"\n🔍 Starting Parallel Pinecone Search...")
     pdf_results, video_results, image_results = await asyncio.gather(
         search_index("pdf", pdf_index),
         search_index("video", video_index),
@@ -764,11 +758,6 @@ async def search_separate_indexes(query_embedding: list, top_k: int) -> list:
     # Combine all results
     all_results = pdf_results + video_results + image_results
     
-    print(f"\n📊 Index Results Summary:")
-    print(f"   - PDF: {len(pdf_results)} results")
-    print(f"   - VIDEO: {len(video_results)} results")
-    print(f"   - IMAGE: {len(image_results)} results")
-    print(f"   - TOTAL: {len(all_results)} results before sorting")
     
     return all_results
 
@@ -906,9 +895,6 @@ Return your response in this EXACT JSON format (no other text):
         rephrased_query = result.get("rephrasedQuery", query)
         classification = result.get("classification", "KNOWLEDGE_QUESTION")
         
-        print(f"🔍 DEBUG: Combined Analysis Result: {result}")
-        print(f"🔍 DEBUG: Final Rephrased Query: {rephrased_query}")
-        print(f"🔍 DEBUG: Final Classification: {classification}")
         
         logger.info("Combined query analysis completed", 
                    original_query=query, 
@@ -1043,7 +1029,6 @@ Examples:
 - User: "who is prime minister of india" → "Sorry, I can't answer general questions. I only respond using your uploaded knowledge base."
 """
         
-        print(f"🔧 Using API Method: {'responses.create()' if USE_RESPONSE_API else 'chat.completions.create()'}")
         
         if USE_RESPONSE_API:
             # ===== METHOD 1: responses.create() API =====
@@ -1136,16 +1121,12 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         is_first_message = request.conversationId is None or request.conversationId == ""
         conversation_title = None
         
-        print(f"🔍 DEBUG: Is First Message: {is_first_message}")
-        print(f"🔍 DEBUG: Conversation ID from request: {request.conversationId}")
         
         if is_first_message:
-            print(f"🔍 DEBUG: Generating conversation title for: {request.question}")
             logger.info("First message detected", conversation_id=request.conversationId)
             conversation_title = await generate_conversation_title(request.question)
-            print(f"🔍 DEBUG: Generated Title: {conversation_title}")
         else:
-            print(f"🔍 DEBUG: Not a first message, skipping title generation")
+            pass
         
         # Handle DOCUMENT type messages (placeholder for now)
         if request.type == "DOCUMENT":
@@ -1169,20 +1150,11 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         query_type = analysis_result["classification"]
         analysis_time = (time.time() - analysis_start) * 1000
         
-        print(f"⏱️ TIMING: Combined Analysis: {analysis_time:.2f}ms")
-        print(f"🔍 DEBUG: Original Query: {request.question}")
-        print(f"🔍 DEBUG: Rephrased Query: {rephrased_query}")
-        print(f"🔍 DEBUG: Classification: {query_type}")
-        print(f"🔍 DEBUG: Conversation History Length: {len(request.conversationHistory)}")
         
-        debug_print("Combined analysis completed", 
-                   original_query=request.question, 
-                   rephrased_query=rephrased_query, 
-                   query_type=query_type)
         
         # Step 2: RAG retrieval timing
         rag_start = time.time()
-        rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K)
+        rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K, query_type)
         rag_time = (time.time() - rag_start) * 1000
         
         if not rag_result["success"]:
@@ -1191,31 +1163,20 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         retrieved_content = rag_result["results"]
         total_retrieved = rag_result["total_retrieved"]
         
-        print(f"⏱️ TIMING: RAG Retrieval: {rag_time:.2f}ms")
-        print(f"🔍 DEBUG: RAG Success: {rag_result['success']}")
-        print(f"🔍 DEBUG: Total Retrieved: {total_retrieved}")
-        print(f"🔍 DEBUG: Retrieved Content Preview: {retrieved_content[0]['content'][:100] if retrieved_content else 'No content'}")
         
-        debug_print("Content retrieved", conversation_id=request.conversationId, total_retrieved=total_retrieved)
         
-        if query_type == "GENERAL_CONVERSATION":
-            # Handle general conversation without RAG
-            debug_print("General conversation detected", conversation_id=request.conversationId)
+        if query_type == "GENERAL_CONVERSATION" or rag_result.get("skipped", False):
+            # Handle general conversation without RAG (or when RAG was skipped)
             try:
                 # Step 3a: General conversation timing
                 general_start = time.time()
-                print(f"🔍 DEBUG: Generating GENERAL conversation answer")
                 logger.info("Starting general conversation answer generation", conversation_id=request.conversationId)
                 result = await generate_general_conversation_answer(request_data)
                 general_time = (time.time() - general_start) * 1000
                 logger.info("General conversation answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
-                print(f"⏱️ TIMING: General Answer Generation: {general_time:.2f}ms")
-                print(f"🔍 DEBUG: General Answer Generated: {ai_answer[:100]}...")
-                print(f"🔍 DEBUG: New Conversation ID: {new_conversation_id}")
             except Exception as e:
-                print(f"🔍 DEBUG: ERROR in General Conversation: {str(e)}")
                 logger.error("General conversation answer generation failed", conversation_id=request.conversationId, error=str(e))
                 raise
             
@@ -1237,18 +1198,13 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             try:
                 # Step 3b: Knowledge answer timing
                 knowledge_start = time.time()
-                print(f"🔍 DEBUG: Generating KNOWLEDGE answer with {len(retrieved_content)} content pieces")
                 logger.info("Starting knowledge question answer generation", conversation_id=request.conversationId)
                 result = await generate_conversational_ai_answer(request_data, retrieved_content)
                 knowledge_time = (time.time() - knowledge_start) * 1000
                 logger.info("Knowledge question answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
-                print(f"⏱️ TIMING: Knowledge Answer Generation: {knowledge_time:.2f}ms")
-                print(f"🔍 DEBUG: Knowledge Answer Generated: {ai_answer[:100]}...")
-                print(f"🔍 DEBUG: New Conversation ID: {new_conversation_id}")
             except Exception as e:
-                print(f"🔍 DEBUG: ERROR in Knowledge Generation: {str(e)}")
                 logger.error("Knowledge question answer generation failed", conversation_id=request.conversationId, error=str(e))
                 raise
         
@@ -1257,16 +1213,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         # Log performance metrics
         duration_ms = (time.time() - start_time) * 1000
         
-        print(f"⏱️ TIMING: TOTAL REQUEST TIME: {duration_ms:.2f}ms")
-        print(f"⏱️ TIMING BREAKDOWN:")
-        print(f"   - Combined Analysis: {analysis_time:.2f}ms")
-        print(f"   - RAG Retrieval: {rag_time:.2f}ms")
-        if query_type == "GENERAL_CONVERSATION":
-            print(f"   - General Answer: {general_time:.2f}ms")
-        else:
-            print(f"   - Knowledge Answer: {knowledge_time:.2f}ms")
         
-        debug_print("Performance metric", metric="ask_query_duration", value=f"{duration_ms}ms", conversation_id=request.conversationId, query_type=query_type, total_retrieved=total_retrieved)
         
         logger.info("AI query completed successfully", 
                    conversation_id=request.conversationId,
@@ -1292,7 +1239,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         
         # Handle cases where retrieval works but AI fails
         try:
-            rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K)
+            rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K, "KNOWLEDGE_QUESTION")
             retrieved_content = rag_result.get("results", [])
             
             # Error handling - conversation saved by backend
@@ -1396,8 +1343,6 @@ Provide a clear, natural answer based on the available information."""
         # Get conversation ID from request (null for new chat)
         previous_response_id = request_data.get("conversationId")
         
-        print(f"🔍 DEBUG: Previous Response ID: {previous_response_id}")
-        print(f"🔧 Using API Method: {'responses.create()' if USE_RESPONSE_API else 'chat.completions.create()'}")
         
         if USE_RESPONSE_API:
             # ===== METHOD 1: responses.create() API =====

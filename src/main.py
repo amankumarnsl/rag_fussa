@@ -8,8 +8,8 @@ import time
 import asyncio
 from urllib.parse import urlparse, unquote
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import PyPDF2
 from typing import List, Dict, Any
 
@@ -33,6 +33,9 @@ DEBUG_PRINT = os.getenv("DEBUG_PRINT", "false").lower() == "true"
 
 # API Method Toggle - set to True for responses.create(), False for chat.completions.create()
 USE_RESPONSE_API = os.getenv("USE_RESPONSE_API", "false").lower() == "true"
+
+# Import configuration from config file
+from .config.config import INCLUDE_CHUNKS_IN_RESPONSE, CONVERSATION_TITLE_MESSAGE_NUMBER
 
 # Debug file logging setup
 debug_file = None
@@ -1104,7 +1107,7 @@ Examples:
         return {"answer": "Hello! I'm here to help you with any questions you might have. How can I assist you today?", "conversationId": request_data.get("conversationId")}
 
 
-@app.post("/ai-service/internal/ask-question", response_model=AskQueryRAGResponse)
+@app.post("/ai-service/internal/ask-question")
 async def ask_query_rag(request: AskQueryRAGRequest):
     """Ask a question to the RAG system with conversational context using conversation_id"""
     start_time = time.time()
@@ -1117,16 +1120,32 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                    type=request.type,
                    request_id=request_id)
         
-        # Check if this is the first message in the conversation
+        # Check if this is the configured message number for title generation
         is_first_message = request.conversationId is None or request.conversationId == ""
+        is_title_message = False
         conversation_title = None
         
-        
         if is_first_message:
-            logger.info("First message detected", conversation_id=request.conversationId)
-            conversation_title = await generate_conversation_title(request.question)
-        else:
+            # This is the first message - no title generation yet
             pass
+        else:
+            # Check if this is the configured message number by counting conversation history
+            conversation_length = len(request.conversationHistory) if request.conversationHistory else 0
+            # Convert 1-based message number to 0-based index
+            target_message_index = CONVERSATION_TITLE_MESSAGE_NUMBER - 1
+            is_title_message = conversation_length == target_message_index
+            
+            if is_title_message:
+                logger.info(f"Message {CONVERSATION_TITLE_MESSAGE_NUMBER} detected - generating conversation title", conversation_id=request.conversationId)
+                # Analyze all messages for better title generation
+                all_messages = []
+                for msg in request.conversationHistory:
+                    all_messages.append(msg.get("question", ""))
+                all_messages.append(request.question)  # Add current message
+                
+                # Join all messages for title generation
+                combined_messages = " | ".join(all_messages)
+                conversation_title = await generate_conversation_title(combined_messages)
         
         # Handle DOCUMENT type messages (placeholder for now)
         if request.type == "DOCUMENT":
@@ -1183,15 +1202,21 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             # Conversation saved by backend - no local storage needed
             
             # Return response without retrieved content for general chat
-            return AskQueryRAGResponse(
-                success=True,
-                message="General conversation response",
-                conversationId=new_conversation_id or "new_conversation",
-                answer=ai_answer,
-                retrieved_content=[],
-                total_retrieved=0,
-                conversationTitle=conversation_title
-            )
+            # Build response with conditional fields
+            response_data = {
+                "success": True,
+                "message": "General conversation response",
+                "conversationId": new_conversation_id or "new_conversation",
+                "answer": ai_answer,
+                "retrieved_content": [] if INCLUDE_CHUNKS_IN_RESPONSE else [],
+                "total_retrieved": 0
+            }
+            
+            # Only include conversationTitle on configured message number
+            if is_title_message and conversation_title:
+                response_data["conversationTitle"] = conversation_title
+                
+            return JSONResponse(content=response_data)
         else:
             # Handle knowledge question with RAG using rephrased query
             logger.info("Knowledge question detected", conversation_id=request.conversationId)
@@ -1222,15 +1247,21 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                    duration_ms=duration_ms)
         
         # Step 5: Return structured response
-        return AskQueryRAGResponse(
-            success=True,
-            message="AI answer generated successfully",
-            conversationId=new_conversation_id or "new_conversation",
-            answer=ai_answer,
-            retrieved_content=retrieved_content,
-            total_retrieved=total_retrieved,
-            conversationTitle=conversation_title
-        )
+        # Build response with conditional fields
+        response_data = {
+            "success": True,
+            "message": "AI answer generated successfully",
+            "conversationId": new_conversation_id or "new_conversation",
+            "answer": ai_answer,
+            "retrieved_content": retrieved_content if INCLUDE_CHUNKS_IN_RESPONSE else [],
+            "total_retrieved": total_retrieved if INCLUDE_CHUNKS_IN_RESPONSE else 0
+        }
+        
+        # Only include conversationTitle on 3rd message
+        if is_third_message and conversation_title:
+            response_data["conversationTitle"] = conversation_title
+            
+        return JSONResponse(content=response_data)
         
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
@@ -1250,15 +1281,21 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                           retrieved_count=len(retrieved_content),
                           error=str(e))
             
-            return AskQueryRAGResponse(
-                success=False,
-                message=f"AI processing failed, but retrieved content available: {str(e)}",
-                conversationId=request.conversationId or "new_conversation",
-                answer=error_answer,
-                retrieved_content=retrieved_content,
-                total_retrieved=len(retrieved_content),
-                conversationTitle=conversation_title
-            )
+            # Build error response with conditional fields
+            response_data = {
+                "success": False,
+                "message": f"AI processing failed, but retrieved content available: {str(e)}",
+                "conversationId": request.conversationId or "new_conversation",
+                "answer": error_answer,
+                "retrieved_content": retrieved_content if INCLUDE_CHUNKS_IN_RESPONSE else [],
+                "total_retrieved": len(retrieved_content) if INCLUDE_CHUNKS_IN_RESPONSE else 0
+            }
+            
+            # Only include conversationTitle on configured message number
+            if is_title_message and conversation_title:
+                response_data["conversationTitle"] = conversation_title
+                
+            return JSONResponse(content=response_data)
         except Exception as fallback_error:
             debug_print("Ask query RAG fallback error", operation="ask_query_rag_fallback", error=str(fallback_error), conversation_id=request.conversationId, original_error=str(e))
             raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")

@@ -350,10 +350,8 @@ async def train(request: TrainRequest):
     global is_processing, is_unprocessing
     request_id = f"req_{int(time.time() * 1000)}"
     
-    # Step 1: Check if process endpoint is busy - IMMEDIATE CHECK
+    # Step 1: Check if process endpoint is busy - IMMEDIATE CHECK (no backend update)
     if is_processing:
-        # Update backend with FAILED status
-        await update_document_status(request.uuid, "FAILED", "Process endpoint busy")
         return JSONResponse(
             status_code=409,
             content={
@@ -374,7 +372,7 @@ async def train(request: TrainRequest):
                    type=request.type,
                    request_id=request_id)
         
-        # Step 3: Update backend with PROCESSING status
+        # Step 3: Update backend with PROCESSING status (after lock set)
         await update_document_status(request.uuid, "PROCESSING")
         
         # Step 4: Check if document already exists in vector DB
@@ -509,10 +507,8 @@ async def get_task_status(task_id: str):
 async def untrain(request: UntrainRequest):
     global is_processing, is_unprocessing
     
-    # Step 1: Check if unprocess endpoint is busy - IMMEDIATE CHECK
+    # Step 1: Check if unprocess endpoint is busy - IMMEDIATE CHECK (no backend update)
     if is_unprocessing:
-        # Update backend with FAILED status
-        await update_document_status(request.uuid, "FAILED", "Unprocess endpoint busy")
         return JSONResponse(
             status_code=409,
             content={
@@ -528,7 +524,7 @@ async def untrain(request: UntrainRequest):
     try:
         debug_print("Starting document removal", uuid=request.uuid, url=str(request.url))
         
-        # Step 3: Update backend with PROCESSING status
+        # Step 3: Update backend with PROCESSING status (after lock set)
         await update_document_status(request.uuid, "PROCESSING")
         
         # Step 4: Extract filename from S3 URL (URL decoding handled in extract_filename_from_s3_url)

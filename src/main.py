@@ -1382,8 +1382,8 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             "total_retrieved": total_retrieved if INCLUDE_CHUNKS_IN_RESPONSE else 0
         }
         
-        # Only include conversationTitle on 3rd message
-        if is_third_message and conversation_title:
+        # Only include conversationTitle on configured message number
+        if is_title_message and conversation_title:
             response_data["conversationTitle"] = conversation_title
             
         return JSONResponse(content=response_data)

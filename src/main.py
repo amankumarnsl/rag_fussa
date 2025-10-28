@@ -919,13 +919,13 @@ def filter_conversation_history(conversation_history: List[Dict]) -> List[Dict]:
         if is_last:
             # Keep both question and answer for the last message
             filtered_history.append({
-                "question": msg.get("question", ""),
-                "answer": msg.get("answer", "")
+                "question": msg.question,
+                "answer": msg.answer
             })
         else:
             # Keep only question for older messages
             filtered_history.append({
-                "question": msg.get("question", "")
+                "question": msg.question
             })
     
     logger.info("Conversation history filtered", 
@@ -1261,7 +1261,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 # Analyze all messages for better title generation
                 all_messages = []
                 for msg in request.conversationHistory:
-                    all_messages.append(msg.get("question", ""))
+                    all_messages.append(msg.question)
                 all_messages.append(request.question)  # Add current message
                 
                 # Join all messages for title generation
@@ -1284,20 +1284,32 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         
         # Step 1: Combined query analysis timing
         analysis_start = time.time()
-        debug_print("Starting combined query analysis", conversation_id=request.conversationId)
-        analysis_result = await analyze_query_and_classify(request_data)
-        rephrased_query = analysis_result["rephrasedQuery"]
-        query_type = analysis_result["classification"]
+        debug_print("🔍 DEBUG: Starting combined query analysis", conversation_id=request.conversationId)
+        try:
+            analysis_result = await analyze_query_and_classify(request_data)
+            rephrased_query = analysis_result["rephrasedQuery"]
+            query_type = analysis_result["classification"]
+            debug_print("🔍 DEBUG: Query analysis successful", rephrased_query=rephrased_query, query_type=query_type)
+        except Exception as e:
+            debug_print("❌ DEBUG: Query analysis failed", error=str(e), error_type=type(e).__name__)
+            raise
         analysis_time = (time.time() - analysis_start) * 1000
         
         
         
         # Step 2: RAG retrieval timing
         rag_start = time.time()
-        rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K, query_type)
+        debug_print("🔍 DEBUG: Starting RAG retrieval", rephrased_query=rephrased_query, query_type=query_type)
+        try:
+            rag_result = await fetch_rag_internal(rephrased_query, DEFAULT_TOP_K, query_type)
+            debug_print("🔍 DEBUG: RAG retrieval successful", success=rag_result["success"], total_retrieved=rag_result.get("total_retrieved", 0))
+        except Exception as e:
+            debug_print("❌ DEBUG: RAG retrieval failed", error=str(e), error_type=type(e).__name__)
+            raise
         rag_time = (time.time() - rag_start) * 1000
         
         if not rag_result["success"]:
+            debug_print("❌ DEBUG: RAG result indicates failure", error=rag_result.get("error", "Unknown error"))
             raise HTTPException(status_code=500, detail=f"Content retrieval failed: {rag_result['error']}")
         
         retrieved_content = rag_result["results"]
@@ -1307,6 +1319,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
         
         if query_type == "GENERAL_CONVERSATION" or rag_result.get("skipped", False):
             # Handle general conversation without RAG (or when RAG was skipped)
+            debug_print("🔍 DEBUG: Processing as GENERAL_CONVERSATION", query_type=query_type, skipped=rag_result.get("skipped", False))
             try:
                 # Step 3a: General conversation timing
                 general_start = time.time()
@@ -1316,7 +1329,9 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 logger.info("General conversation answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
+                debug_print("🔍 DEBUG: General conversation successful", answer_length=len(ai_answer), conversation_id=new_conversation_id)
             except Exception as e:
+                debug_print("❌ DEBUG: General conversation failed", error=str(e), error_type=type(e).__name__)
                 logger.error("General conversation answer generation failed", conversation_id=request.conversationId, error=str(e))
                 raise
             
@@ -1340,6 +1355,7 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             return JSONResponse(content=response_data)
         else:
             # Handle knowledge question with RAG using rephrased query
+            debug_print("🔍 DEBUG: Processing as KNOWLEDGE_QUESTION", query_type=query_type, retrieved_count=len(retrieved_content))
             logger.info("Knowledge question detected", conversation_id=request.conversationId)
             try:
                 # Step 3b: Knowledge answer timing
@@ -1350,7 +1366,9 @@ async def ask_query_rag(request: AskQueryRAGRequest):
                 logger.info("Knowledge question answer generated", conversation_id=request.conversationId)
                 ai_answer = result["answer"]
                 new_conversation_id = result["conversationId"]
+                debug_print("🔍 DEBUG: Knowledge question successful", answer_length=len(ai_answer), conversation_id=new_conversation_id)
             except Exception as e:
+                debug_print("❌ DEBUG: Knowledge question failed", error=str(e), error_type=type(e).__name__)
                 logger.error("Knowledge question answer generation failed", conversation_id=request.conversationId, error=str(e))
                 raise
         
@@ -1387,12 +1405,14 @@ async def ask_query_rag(request: AskQueryRAGRequest):
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
         
-        debug_print("Ask query RAG error", operation="ask_query_rag", error=str(e), conversation_id=request.conversationId, question=request.question, duration_ms=duration_ms, request_id=request_id)
+        debug_print("❌ DEBUG: Main ask_query_rag error", operation="ask_query_rag", error=str(e), error_type=type(e).__name__, conversation_id=request.conversationId, question=request.question, duration_ms=duration_ms, request_id=request_id)
         
         # Handle cases where retrieval works but AI fails
         try:
+            debug_print("🔍 DEBUG: Attempting fallback RAG retrieval", question=request.question)
             rag_result = await fetch_rag_internal(request.question, DEFAULT_TOP_K, "KNOWLEDGE_QUESTION")
             retrieved_content = rag_result.get("results", [])
+            debug_print("🔍 DEBUG: Fallback RAG successful", retrieved_count=len(retrieved_content))
             
             # Error handling - conversation saved by backend
             error_answer = "Sorry, I couldn't generate an answer due to a technical issue, but I found some relevant content below."
@@ -1416,9 +1436,10 @@ async def ask_query_rag(request: AskQueryRAGRequest):
             if is_title_message and conversation_title:
                 response_data["conversationTitle"] = conversation_title
                 
+            debug_print("🔍 DEBUG: Returning fallback response", success=response_data["success"], answer_length=len(error_answer))
             return JSONResponse(content=response_data)
         except Exception as fallback_error:
-            debug_print("Ask query RAG fallback error", operation="ask_query_rag_fallback", error=str(fallback_error), conversation_id=request.conversationId, original_error=str(e))
+            debug_print("❌ DEBUG: Fallback also failed", operation="ask_query_rag_fallback", error=str(fallback_error), error_type=type(fallback_error).__name__, conversation_id=request.conversationId, original_error=str(e))
             raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
